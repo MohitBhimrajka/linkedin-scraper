@@ -76,19 +76,25 @@ async def run_campaign(
                     
                     if row_idx:
                         now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                        # Update the message columns
-                        worksheet.update(f"G{row_idx}", msgs["connection"])  # Connection Msg
-                        worksheet.update(f"H{row_idx}", msgs["comment"])     # Comment Msg
-                        worksheet.update(f"I{row_idx}", msgs["followups"][0] if len(msgs["followups"]) > 0 else "")  # F/U-1
-                        worksheet.update(f"J{row_idx}", msgs["followups"][1] if len(msgs["followups"]) > 1 else "")  # F/U-2
-                        worksheet.update(f"K{row_idx}", msgs["followups"][2] if len(msgs["followups"]) > 2 else "")  # F/U-3
-                        worksheet.update(f"L{row_idx}", f"Subject: {msgs['inmail_subject']}\nBody: {msgs['inmail_body']}")  # InMail
                         
-                        # Update status
-                        worksheet.update(f"M{row_idx}", "GENERATED")  # Contact Status
-                        worksheet.update(f"N{row_idx}", now)          # Last Action UTC
+                        # Prepare all updates as a batch to minimize API calls
+                        cell_updates = [
+                            {"range": f"G{row_idx}", "values": [[msgs["connection"]]]},
+                            {"range": f"H{row_idx}", "values": [[msgs["comment"]]]},
+                            {"range": f"I{row_idx}", "values": [[msgs["followups"][0] if len(msgs["followups"]) > 0 else ""]]},
+                            {"range": f"J{row_idx}", "values": [[msgs["followups"][1] if len(msgs["followups"]) > 1 else ""]]},
+                            {"range": f"K{row_idx}", "values": [[msgs["followups"][2] if len(msgs["followups"]) > 2 else ""]]},
+                            {"range": f"L{row_idx}", "values": [[f"Subject: {msgs['inmail_subject']}\nBody: {msgs['inmail_body']}"]]},
+                            {"range": f"M{row_idx}", "values": [["GENERATED"]]},
+                            {"range": f"N{row_idx}", "values": [[now]]}
+                        ]
+                        
+                        # Execute the batch update
+                        worksheet.batch_update(cell_updates)
+                        logger.info(f"Updated messages for {p.linkedin_url} in sheet")
+                        
                 except Exception as e:
-                    logger.error(f"Failed to update sheet for {p.linkedin_url}: {e}")
+                    logger.error(f"Failed to update sheet for {p.linkedin_url}: {str(e)}")
             
             # Skip API calls if in generate-only mode
             if mode == "Generate only":
@@ -101,8 +107,10 @@ async def run_campaign(
             # Update status in sheet
             if worksheet and row_idx:
                 now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                worksheet.update(f"M{row_idx}", "INVITED")  # Contact Status
-                worksheet.update(f"N{row_idx}", now)        # Last Action UTC
+                worksheet.batch_update([
+                    {"range": f"M{row_idx}", "values": [["INVITED"]]},
+                    {"range": f"N{row_idx}", "values": [[now]]}
+                ])
             
             # 3 comment (for "Invite + Comment" and "Full" modes)
             if (mode == "Invite + Comment" or mode == "Full") and posts:
@@ -111,8 +119,10 @@ async def run_campaign(
                 # Update status in sheet
                 if worksheet and row_idx:
                     now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                    worksheet.update(f"M{row_idx}", "COMMENTED")  # Contact Status
-                    worksheet.update(f"N{row_idx}", now)          # Last Action UTC
+                    worksheet.batch_update([
+                        {"range": f"M{row_idx}", "values": [["COMMENTED"]]},
+                        {"range": f"N{row_idx}", "values": [[now]]}
+                    ])
 
             # 4 store follow-ups in sheet (don't schedule yet)
             # Real conversation ID only exists after invite acceptance
@@ -127,8 +137,10 @@ async def run_campaign(
             
             # Mark follow-ups as ready if in Full mode
             if mode == "Full" and worksheet and row_idx:
-                worksheet.update(f"M{row_idx}", "FOLLOW-UPS READY")  # Contact Status
-                worksheet.update(f"N{row_idx}", now.isoformat())      # Last Action UTC
+                worksheet.batch_update([
+                    {"range": f"M{row_idx}", "values": [["FOLLOW-UPS READY"]]},
+                    {"range": f"N{row_idx}", "values": [[now.isoformat()]]}
+                ])
                 
                 # In a real implementation, we would store the user ID and the follow-up dates
                 # in a separate table or queue for a background worker to process
@@ -142,9 +154,11 @@ async def run_campaign(
             if worksheet and row_idx:
                 try:
                     now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                    worksheet.update(f"M{row_idx}", "ERROR")  # Contact Status
-                    worksheet.update(f"N{row_idx}", now)      # Last Action UTC
-                    worksheet.update(f"O{row_idx}", str(e))   # Store error message in extra column
+                    worksheet.batch_update([
+                        {"range": f"M{row_idx}", "values": [["ERROR"]]},
+                        {"range": f"N{row_idx}", "values": [[now]]},
+                        {"range": f"O{row_idx}", "values": [[str(e)]]}
+                    ])
                 except Exception as sheet_error:
                     logger.error(f"Failed to update error status in sheet: {sheet_error}")
     
