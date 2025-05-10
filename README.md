@@ -74,17 +74,25 @@ The results are stored in Google Sheets with the following columns:
 1. LinkedIn URL
 2. Title
 3. First Name
-4. Last Name 
-5. Description
-6. Profile Image URL 
-7. Connection Msg
-8. Comment Msg
-9. F/U-1
-10. F/U-2
-11. F/U-3
-12. InMail
-13. Contact Status
-14. Last Action UTC
+4. Last Name
+5. Company
+6. Location
+7. Description
+8. Profile Image URL
+9. Connection Msg
+10. Comment Msg
+11. FU-1
+12. FU-2
+13. FU-3
+14. InMail
+15. Contact Status
+16. Last Action UTC
+17. Error Msg
+18. Invite ID
+19. Connection State
+20. Follower Cnt
+21. Unread Cnt
+22. Last Msg UTC
 
 ## Running a Campaign
 

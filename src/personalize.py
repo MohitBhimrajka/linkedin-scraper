@@ -3,6 +3,7 @@ from typing import Dict, List
 from google import genai
 from google.genai import types
 from src.logging_conf import logger
+from src.transform import Profile  # Import the Profile class
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL = "gemini-2.5-flash-preview-04-17"
@@ -29,70 +30,77 @@ Your task is to craft hyper-personalized messages that demonstrate you've genuin
    - Focus on providing value or insight before asking for anything
    - Write in a natural, conversational tone appropriate for professional context
 
-3. CONNECTION REQUEST (120 chars max):
+3. CONNECTION REQUEST (Strictly 120 chars max):
    - Must establish immediate relevance ("I noticed your work on...")
    - Include a specific, personalized detail they'll recognize from their background 
    - Explain the value/reason for connecting beyond just "networking"
-   - ZERO sales language or generic statements in the initial connection
+   - ABSOLUTELY NO sales language or generic statements.
+   - The 120-character limit is a TECHNICAL CONSTRAINT. Adhere to it strictly.
 
 4. COMMENT APPROACH:
-   - Respond to the SPECIFIC CONTENT they posted with thoughtful insight
-   - Add valuable perspective, relevant experience, or a thought-provoking question
-   - Avoid generic praise like "Great post!" - be substantive
-   - If no post is available, reference their profile headline/background instead
+   - If a recent post is provided in the input, respond to the SPECIFIC CONTENT of that post with thoughtful insight.
+   - Add valuable perspective, relevant experience, or a thought-provoking question related to their post.
+   - Avoid generic praise like "Great post!" - be substantive.
+   - If no recent post is available (recent_post field is empty or null), craft a comment referencing their profile headline, recent achievements, or a key aspect of their current role or company instead. Make it engaging.
 
-5. FOLLOW-UP STRATEGY:
-   - Each follow-up should provide NEW value or perspective (industry insights, relevant resources)
-   - Progressively deepen the relationship with each message
-   - Only the final follow-up should suggest a specific next step or meeting
-   - Space messages appropriately (don't appear desperate)
+5. FOLLOW-UP STRATEGY (3 distinct messages required):
+   - ALL THREE follow-up messages MUST be generated. Do not omit any.
+   - Each follow-up MUST provide NEW value, insight, or a gentle relationship-building touchpoint.
+   - DO NOT use bracketed placeholders like "[Link to relevant article]" or "[mention a specific area]". Instead, if suggesting an article, describe the *topic* of such an article (e.g., "I recalled an insightful article discussing the future of AI in product operations..."). If asking about an area, be specific based on their profile (e.g., "Curious about your experience with scaling product teams in the fintech sector...").
+   - Follow-up 1: Gentle value (e.g., share a thought on a relevant trend, mention a conceptual article topic).
+   - Follow-up 2: Slightly deeper engagement (e.g., ask a thoughtful question based on their role/industry, share another conceptual insight).
+   - Follow-up 3: If appropriate, suggest a very low-pressure next step (e.g., "would be open to a brief virtual coffee to exchange perspectives if your schedule ever allows").
+   - Ensure messages are distinct and progressively build the connection.
 
-6. FORMAT REQUIREMENTS:
-   - Connection request: Conversational, genuinely interesting, max 120 chars
-   - Comment: Thoughtful response (if no post, reference profile headline)
-   - Follow-ups: Three distinct messages that build relationship
-   - InMail: Professional but warm, clear value proposition
+6. INMAIL (Subject and Body required):
+   - Both `inmail_subject` and `inmail_body` MUST be generated.
+   - Subject: Personalized, concise, and attention-grabbing (max 70 chars).
+   - Body: Professional but warm, clearly state the value proposition or reason for reaching out (max 500 chars). Focus on mutual interest or learning. Avoid being overly salesy.
 
-You MUST return a valid JSON object with EXACTLY these keys:
+You MUST return a valid JSON object with EXACTLY these keys and non-empty string values for all messages:
 {{{{
  "connection": "<120‑char hyper-personalized connection request>",
- "comment": "<substantive reply (if no post, reference profile headline)>",
+ "comment": "<substantive reply (if no post, reference profile headline/role)>",
  "followups": ["<value-adding follow-up 1>", "<relationship-building follow-up 2>", "<action-oriented follow-up 3>"],
  "inmail_subject": "<personalized, attention-grabbing subject>",
  "inmail_body": "<personalized message up to 500 chars>"
 }}}}
+All text values in the JSON must be complete, professional, and ready for direct use.
 """
 
-def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
+def craft_messages(profile_data: Profile, recent_post:str="") -> Dict:
     """
     Craft hyper-personalized LinkedIn messages based on profile data and recent post content.
     
     Args:
-        profile_data: Dictionary containing LinkedIn profile information
+        profile_data: Profile object containing LinkedIn profile information
         recent_post: Text of recipient's recent LinkedIn post (if available)
         
     Returns:
         Dictionary with personalized connection request, comment, follow-ups, and InMail
     """
-    # Enrich the input data to provide more context for personalization
-    # Handle both old and new API field names
-    first_name = profile_data.get("first_name", profile_data.get("firstName", ""))
-    last_name = profile_data.get("last_name", profile_data.get("lastName", ""))
-    headline = profile_data.get("headline", profile_data.get("title", ""))
-    industry = profile_data.get("industry", "")
-    company = profile_data.get("company_name", profile_data.get("company", profile_data.get("companyName", "")))
+    # Access fields using attributes
+    first_name = profile_data.first_name or ""
+    last_name = profile_data.last_name or ""
+    headline = profile_data.title or ""
+    industry = ""  # Profile model doesn't have a dedicated 'industry' field currently
+    company = profile_data.company or ""
     
+    # Prepare profile dictionary for the prompt
+    # Convert Pydantic model to dict for JSON serialization
+    profile_dict_for_prompt = profile_data.model_dump(exclude_none=True)
+
     input_data = {
-        "profile": profile_data,
+        "profile": profile_dict_for_prompt,
         "recent_post": recent_post,
         "first_name": first_name,
         "last_name": last_name,
         "industry_context": industry,
         "current_role": headline,
-        "skills": profile_data.get("skills", []),
+        "skills": [],  # Profile model doesn't have 'skills' field
         "company": company,
-        "provider_id": profile_data.get("provider_id", ""),  # Store the provider_id for reference
-        "followers_count": profile_data.get("followers_count", profile_data.get("followersCount", 0))  # Include follower count
+        "provider_id": getattr(profile_data, 'provider_id', ''),  # Safely access if it exists
+        "followers_count": profile_data.followers_count or 0
     }
     
     # Create well-formatted JSON for the prompt
@@ -132,23 +140,32 @@ def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
                 if json_match:
                     return json.loads(json_match.group(0))
                 else:
-                    logger.warning(f"Attempt {attempt+1}: Could not find JSON in response")
+                    logger.warning(f"Attempt {attempt+1}: Could not find JSON in response. Response text: {text[:200]}...")
         except json.JSONDecodeError as e:
-            if attempt < 2:  # If not the last attempt
-                logger.warning(f"Attempt {attempt+1}: JSON parse error: {e}. Retrying...")
-            else:
+            logger.warning(f"Attempt {attempt+1}: JSON parse error: {e}. Response text: {text[:200]}...")
+            if attempt == 2:  # Last attempt
                 logger.error(f"Failed to parse JSON after 3 attempts: {e}")
-                raise
+                # Fall through to fallback to avoid raising here, campaign can log error
+        except Exception as e:  # Catch other potential API errors
+            logger.warning(f"Attempt {attempt+1}: Error calling Gemini API: {str(e)}")
+            if attempt == 2:
+                logger.error(f"Failed to call Gemini API after 3 attempts: {str(e)}")
     
-    # Fallback response if all attempts fail but don't raise an exception
+    # Fallback response
+    logger.warning(f"All attempts to craft messages via Gemini failed for profile: {profile_data.linkedin_url}. Using fallback.")
+    
+    # Build industry/role info for fallback messages
+    role_info = headline.split('|')[0].strip() if headline and '|' in headline else headline or 'your field'
+    industry_or_role = industry or role_info
+    
     return {
-        "connection": f"Noticed your work in {industry or 'your industry'}. I'm exploring similar challenges - would love to connect!",
-        "comment": f"Really enjoyed reading about your work in {headline.split('|')[0].strip() if headline else 'your field'}! The approach you're taking is inspiring.",
+        "connection": f"Noticed your work in {industry_or_role}. I'm exploring similar challenges - would love to connect!",
+        "comment": f"Really enjoyed reading about your work in {role_info}! The approach you're taking is inspiring.",
         "followups": [
-            "Hope you're having a great week! Wanted to share this article that relates to your recent post.",
-            "Just came across this resource that might interest you given your background.",
-            "Would value your perspective on a project I'm working on - any chance we could chat briefly?"
+            f"Hope you're having a great week, {first_name}! Wanted to share that I've been thinking about {role_info} challenges lately, particularly around optimization and efficiency.",
+            f"Hi {first_name}, I recently came across some interesting insights on trends affecting {company or 'companies in your sector'}. Would love to hear your perspective on how you're navigating these changes.",
+            f"Hi {first_name}, if your schedule allows, I'd value a brief conversation to exchange ideas on {industry_or_role}. I've been working on some approaches that might align with your interests."
         ],
-        "inmail_subject": f"Quick question about {industry or 'your industry'} approach",
-        "inmail_body": f"Hi {first_name or 'there'}, I noticed your experience with {headline or 'your current role'}. I'm working on similar challenges and would love to learn from your approach. Would you be open to a brief conversation about how you've navigated this space? I'm happy to share my insights as well."
+        "inmail_subject": f"Regarding your expertise in {industry_or_role}",
+        "inmail_body": f"Hi {first_name or 'there'},\n\nI noticed your experience with {headline or 'your current role'} at {company or 'your company'}. I'm working on similar challenges in the {industry_or_role} space and would value your perspective.\n\nWould you be open to a brief conversation about how you've approached these challenges? I'd be happy to share my insights as well.\n\nLooking forward to potentially connecting,\n\nYour Name"
     } 

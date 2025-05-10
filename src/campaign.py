@@ -99,18 +99,32 @@ async def run_campaign(
                 # 1. If message generation is needed, do that first
                 if should_generate_messages:
                     # Generate personalized messages based on the profile data
-                    msgs = await craft_messages(p)
+                    # Pass recent_post if available and used by craft_messages
+                    recent_post_text = recent # Assuming 'recent' is fetched post text
+                    msgs = await asyncio.to_thread(craft_messages, p, recent_post=recent_post_text)
                     
                     # Update the profile object with the generated messages
-                    p.connection_msg = msgs["connection"]
-                    p.comment_msg = msgs["comment"]
-                    p.followup1 = msgs["followups"][0] if len(msgs["followups"]) > 0 else ""
-                    p.followup2 = msgs["followups"][1] if len(msgs["followups"]) > 1 else ""
-                    p.followup3 = msgs["followups"][2] if len(msgs["followups"]) > 2 else ""
+                    p.connection_msg = msgs.get("connection", "")
+                    p.comment_msg = msgs.get("comment", "")
                     
+                    followups = msgs.get("followups", [])
+                    p.followup1 = followups[0] if len(followups) > 0 else ""
+                    p.followup2 = followups[1] if len(followups) > 1 else ""
+                    p.followup3 = followups[2] if len(followups) > 2 else ""
+                    
+                    # Assign InMail subject and body
+                    inmail_subject = msgs.get("inmail_subject", "")
+                    inmail_body = msgs.get("inmail_body", "")
+                    if inmail_subject and inmail_body:
+                        p.inmail = f"Subject: {inmail_subject}\n\n{inmail_body}"
+                    elif inmail_body: # If only body is present
+                        p.inmail = inmail_body
+                    else: # If neither or only subject (less useful alone)
+                        p.inmail = ""
+                        
                     stats.generated += 1
                 else:
-                    # Use existing messages from the profile
+                    # Use existing messages from the profile (ensure all fields are covered)
                     msgs = {
                         "connection": p.connection_msg or "",
                         "comment": p.comment_msg or "",
@@ -118,23 +132,30 @@ async def run_campaign(
                             p.followup1 or "",
                             p.followup2 or "",
                             p.followup3 or ""
-                        ]
+                        ],
+                        # Reconstruct InMail subject/body if they were stored separately
+                        # or ensure p.inmail is directly usable
+                        "inmail_subject": "", # Or parse from p.inmail if needed
+                        "inmail_body": p.inmail or ""
                     }
                 
                 # 2. Find the row in the Google Sheet (if applicable)
                 if worksheet:
                     try:
                         # Find the row with this LinkedIn URL
-                        cell = worksheet.find(p.linkedin_url)
+                        # Ensure gspread calls are threaded if worksheet is used in async context
+                        # cell = await asyncio.to_thread(worksheet.find, p.linkedin_url)
+                        cell = worksheet.find(p.linkedin_url) # Assuming worksheet ops are made thread-safe elsewhere or run sync
                         row_idx = cell.row
                         
                         # Update the message cells in the sheet
                         batch_updates = [
-                            {"range": f"G{row_idx}", "values": [[msgs["connection"]]]},
-                            {"range": f"H{row_idx}", "values": [[msgs["comment"]]]},
-                            {"range": f"I{row_idx}", "values": [[msgs["followups"][0] if len(msgs["followups"]) > 0 else "—"]]},
-                            {"range": f"J{row_idx}", "values": [[msgs["followups"][1] if len(msgs["followups"]) > 1 else "—"]]},
-                            {"range": f"K{row_idx}", "values": [[msgs["followups"][2] if len(msgs["followups"]) > 2 else "—"]]}
+                            {"range": f"I{row_idx}", "values": [[p.connection_msg]]},
+                            {"range": f"J{row_idx}", "values": [[p.comment_msg]]},
+                            {"range": f"K{row_idx}", "values": [[p.followup1 or "—"]]},
+                            {"range": f"L{row_idx}", "values": [[p.followup2 or "—"]]},
+                            {"range": f"M{row_idx}", "values": [[p.followup3 or "—"]]},
+                            {"range": f"N{row_idx}", "values": [[p.inmail or "—"]]} # Column N for InMail
                         ]
                         worksheet.batch_update(batch_updates)
                         logger.info(f"Updated messages for row {row_idx}")
@@ -173,25 +194,24 @@ async def run_campaign(
                 # 4. Always fetch posts to provide data for comments
                 try:
                     logger.info(f"Fetching recent posts for {provider_id}")
-                    posts = await client.recent_posts(provider_id=provider_id, limit=1)
-                    # Check posts is a proper list
-                    if not isinstance(posts, list):
-                        logger.warning(f"Unexpected posts data structure received: {type(posts)}")
-                        posts = []
-                    recent = posts[0]["text"] if posts and len(posts) > 0 else ""
+                    posts_data = await client.recent_posts(provider_id=provider_id, limit=1) # Renamed to posts_data
+                    if not isinstance(posts_data, list):
+                        logger.warning(f"Unexpected posts data structure received: {type(posts_data)}")
+                        posts_data = []
+                    recent = posts_data[0]["text"] if posts_data and len(posts_data) > 0 and "text" in posts_data[0] else "" # Assign to 'recent'
                 except IndexError:
                     logger.warning(f"No posts found for {provider_id}")
                     recent = ""
-                    posts = []
+                    posts_data = []
                 except KeyError as e:
                     logger.warning(f"Missing key in post data for {provider_id}: {e}")
                     recent = ""
-                    posts = []
+                    posts_data = []
                 except Exception as e:
                     # Non-fatal error for posts
                     logger.warning(f"Failed to fetch posts for {provider_id}: {e}")
                     recent = ""
-                    posts = []
+                    posts_data = []
                 
                 # 5. Send invitation with connection message
                 try:

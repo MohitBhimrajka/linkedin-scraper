@@ -1,3 +1,4 @@
+import re
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 from src.logging_conf import logger
@@ -123,8 +124,35 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         elif "jobposting" in item["pagemap"] and item["pagemap"]["jobposting"]:
             structured_data = item["pagemap"]["jobposting"][0]
     
-    # Extract company if available from structured data
-    company = structured_data.get("name") or structured_data.get("worksfor") or ""
+    # Extract company if available from structured data or title
+    company = ""
+    if "pagemap" in item:
+        if "person" in item["pagemap"] and item["pagemap"]["person"]:
+            person_data = item["pagemap"]["person"][0]
+            company = person_data.get("worksfor") or person_data.get("affiliation") # More person-specific fields
+        elif "jobposting" in item["pagemap"] and item["pagemap"]["jobposting"]:
+            job_data = item["pagemap"]["jobposting"][0]
+            company = job_data.get("hiringorganization", {}).get("name") or job_data.get("name") # For job postings, company is often here
+    
+    # Fallback: Try to extract company from the title string (e.g., "Job Title at Company")
+    if not company and title:
+        # Common patterns: " at ", " @ ", " - " (if followed by company-like words)
+        match_at = re.search(r'\s+at\s+([\w\s.&-]+?)(?:\s+-|\s+\||$)', title, re.IGNORECASE)
+        match_hyphen_company = re.search(r'-\s+([\w\s.&-]+?)(?:\s+\||$)', title, re.IGNORECASE) # e.g. Director - Google
+        
+        if match_at:
+            company_candidate = match_at.group(1).strip()
+            # Avoid capturing very long strings or job descriptions if 'at' is used within them
+            if len(company_candidate.split()) <= 4: # Heuristic: company names are usually short
+                company = company_candidate
+        elif match_hyphen_company and not name_parts.get("last_name", "").endswith(match_hyphen_company.group(1).strip()): # Ensure it's not part of the name
+             company_candidate = match_hyphen_company.group(1).strip()
+             if len(company_candidate.split()) <= 4:
+                company = company_candidate
+    
+    # Clean up company name from common suffixes like " Inc.", ", LLC" if they are part of a larger non-company string
+    if company:
+        company = re.sub(r'(?i)(?:,\s*Inc\.|\s+Inc\.|\s*LLC|\s*Ltd\.|\s*GmbH)$', '', company).strip()
     
     return Profile(
         linkedin_url=linkedin_url,
@@ -135,7 +163,7 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         profile_image_url=profile_image_url,
         followers_count=0,  # Initialize to 0, will be updated with real data if available
         location=location,
-        company=company
+        company=company.strip() or None  # Ensure it's None if empty after stripping
     )
 
 
@@ -150,28 +178,53 @@ def extract_location(description: str, title: str) -> Optional[str]:
     Returns:
         Location string if found, None otherwise
     """
-    # Common location patterns in LinkedIn profiles
-    location_indicators = [
-        " in ", " at ", " from ", "located in", "based in", 
-        "working in", "living in", "residing in"
-    ]
+    # Try to find location in title first, as it's often more structured
+    # Pattern: "Name - Title at Company (Location)" or "Name | Title | Location"
+    if title:
+        match_parentheses = re.search(r'\(([^)]+)\)$', title) # Location in parentheses at the end
+        if match_parentheses:
+            loc_candidate = match_parentheses.group(1).strip()
+            # Basic check to avoid capturing job descriptions or non-locations
+            if 1 < len(loc_candidate.split(',')) <= 3 or (len(loc_candidate.split()) <= 4 and not any(verb in loc_candidate.lower() for verb in ["hiring", "remote", "contract"])):
+                return loc_candidate
+
+        # Try splitting by "|" and check the last part if it looks like a location
+        title_parts = [part.strip() for part in title.split('|')]
+        if len(title_parts) > 1:
+            potential_loc = title_parts[-1]
+            # Heuristic: locations are often 1-3 words, or contain a comma (City, State/Country)
+            if (1 <= len(potential_loc.split()) <= 4 and not any(c.isdigit() for c in potential_loc)) or ',' in potential_loc:
+                # Further check to avoid job titles like "Greater Area Manager"
+                if not any(kw.lower() in potential_loc.lower() for kw in ["manager", "director", "engineer", "specialist", "lead"]):
+                     # Check if it's part of the "First Name Last Name | Title | Company | Location" pattern
+                    if len(title_parts) >= 3 and potential_loc.lower() != title_parts[-2].lower() and potential_loc.lower() != title_parts[0].lower() :
+                        return potential_loc
+
+    # Try to find location in description (with improved pattern matching)
+    if description:
+        location_indicators = [
+            " in ", " based in ", " located in ", " from " # more specific with spaces
+        ]
+        
+        # Regex for common location patterns
+        # Matches "City, State", "City, Country", "Region Area"
+        location_regex = r'\b(?:[A-Z][\w\s-]+,\s*(?:[A-Z][\w\s-]+(?:\s*Area)?|[A-Z]{2,}))|(?:Greater\s+[A-Z][\w\s-]+(?:\s*City)?(?:\s*Area)?|[A-Z][\w\s-]+\s+Area)\b'
+        
+        match = re.search(location_regex, description)
+        if match:
+            return match.group(0).strip()
+
+        for indicator in location_indicators:
+            if indicator.lower() in description.lower(): # case-insensitive search
+                parts = description.lower().split(indicator.lower(), 1)
+                if len(parts) > 1:
+                    # Take text after indicator, split by sentence end or common separators
+                    location_part = re.split(r'[.,;!?)("]', parts[1], 1)[0].strip()
+                    # Filter out very long strings or things that don't look like locations
+                    if 0 < len(location_part) < 50 and not any(kw.lower() in location_part for kw in ["experience", "responsibilities", "skills"]):
+                        # Capitalize words in the location
+                        return ' '.join(word.capitalize() for word in location_part.split())
     
-    # Try to find location in description
-    for indicator in location_indicators:
-        if indicator in description.lower():
-            parts = description.split(indicator, 1)
-            if len(parts) > 1:
-                location_part = parts[1].split(".")[0].split(",")[0].strip()
-                # Only return if it looks like a location (not too long)
-                if 2 <= len(location_part.split()) <= 5:
-                    return location_part
-    
-    # Check if location is in title format "Name - Title at Company (Location)"
-    if " - " in title and "(" in title and title.endswith(")"):
-        location = title.split("(")[-1].rstrip(")")
-        if len(location.split()) <= 5:  # Simple check that it's not too complex
-            return location
-            
     return None
 
 

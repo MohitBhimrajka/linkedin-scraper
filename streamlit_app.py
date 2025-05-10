@@ -10,6 +10,7 @@ from google import genai
 from google.genai import types
 from gspread.exceptions import WorksheetNotFound, GSpreadException
 from datetime import datetime
+import traceback
 
 # Import from our scraper
 from src.runner import process_query, load_queries
@@ -454,6 +455,58 @@ def _determine_next_action(connection_state, contact_status, connection_actions,
     return "Generate messages"
 
 
+# Create an async function to process all ICPs concurrently
+async def _process_all_icps_concurrently(queries_to_process, limit_per_icp, batcher_instance, st_progress_bar, st_progress_text):
+    all_optimized_icps_data = []
+    optimization_step_weight = 0.2  # 20% of progress for optimization
+    processing_step_weight = 0.8    # 80% of progress for fetching
+
+    num_queries = len(queries_to_process)
+
+    # Step 1: Optimize all queries (synchronous, but can be batched if Gemini API were async)
+    optimized_query_details = []
+    for i, original_query_text in enumerate(queries_to_process):
+        st_progress_text.text(f"Optimizing ICP #{i+1}/{num_queries}...")
+        optimized_text = optimize_query_with_gemini(original_query_text)  # This is a sync call
+        optimized_query_details.append({
+            "original": original_query_text,
+            "optimized": optimized_text,
+            "results": [],  # Placeholder
+            "result_count": 0  # Placeholder
+        })
+        st_progress_bar.progress(((i + 1) / num_queries) * optimization_step_weight)
+    
+    # Step 2: Create coroutines for fetching profiles for each optimized query
+    fetch_tasks = []
+    for i, detail in enumerate(optimized_query_details):
+        st_progress_text.text(f"Preparing to fetch for ICP #{i+1}/{num_queries}: {detail['original'][:50]}...")
+        # process_query is an async function
+        fetch_tasks.append(process_query(detail['optimized'], limit=limit_per_icp, batcher=batcher_instance))
+
+    # Step 3: Run all fetch_profile tasks concurrently
+    all_query_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    # Step 4: Collate results
+    current_progress = optimization_step_weight
+    for i, result_or_exception in enumerate(all_query_results):
+        detail = optimized_query_details[i]
+        if isinstance(result_or_exception, Exception):
+            st.error(f"Error processing optimized ICP '{detail['optimized'][:50]}...': {str(result_or_exception)}")
+            logger.error(f"Exception during process_query for '{detail['optimized']}': {result_or_exception}")
+            detail["results"] = []
+            detail["result_count"] = 0
+        else:
+            detail["results"] = result_or_exception
+            detail["result_count"] = len(result_or_exception)
+        
+        all_optimized_icps_data.append(detail)
+        current_progress += (1/num_queries) * processing_step_weight
+        st_progress_bar.progress(min(current_progress, 1.0))  # Cap progress at 1.0
+        st_progress_text.text(f"Fetched data for ICP #{i+1}/{num_queries}. Found {detail['result_count']} profiles.")
+        
+    return all_optimized_icps_data
+
+
 def main():
     # Initialize session state variables
     if 'page' not in st.session_state:
@@ -767,75 +820,39 @@ def main():
             
         # Handle the processing page in the Generate tab
         elif st.session_state.page == 'processing':
-            # Show processing UI
             st.subheader("Processing ICPs")
             progress_text = st.empty()
             progress_bar = st.progress(0.0)
             
-            # Process ICPs asynchronously
-            progress_text.text("Preparing to process ICPs...")
-            
-            # We'll process them synchronously for now, but this can be made async
             try:
                 limit = st.session_state.get('run_limit', 100)
-                progress_text.text(f"Processing {len(st.session_state.queries)} ICPs (max {limit} results each)...")
+                queries = st.session_state.queries
+                progress_text.text(f"Preparing to process {len(queries)} ICPs (max {limit} results each)...")
                 
-                # Create a shared batch processor for all queries
-                batcher = Batcher(max_in_flight=5, delay=2)
+                batcher = Batcher(max_in_flight=5, delay=2)  # Create Batcher once
                 
-                # Process all ICPs
-                all_optimized_icps = []
-                
-                for i, query in enumerate(st.session_state.queries):
-                    progress_text.text(f"Processing ICP #{i+1}/{len(st.session_state.queries)}: Optimizing...")
-                    progress_bar.progress((i / len(st.session_state.queries)) * 0.2)  # Initial 20% for preparation
-                    
-                    try:
-                        # Optimize the query first
-                        optimized_query = optimize_query_with_gemini(query)
-                        
-                        # Process the query to get results
-                        query_results = asyncio.run(process_query(optimized_query, limit=limit, batcher=batcher))
-                        
-                        # Structure the data with necessary fields
-                        icp_data = {
-                            "original": query,
-                            "optimized": optimized_query,
-                            "results": query_results,
-                            "result_count": len(query_results)
-                        }
-                        
-                        all_optimized_icps.append(icp_data)
-                        
-                        # Update progress
-                        progress_text.text(f"Processed ICP #{i+1}: Found {len(query_results)} matching profiles")
-                        progress_bar.progress(0.2 + (i / len(st.session_state.queries)) * 0.6)  # 20-80% for processing
-                    except Exception as e:
-                        st.error(f"Error processing ICP #{i+1}: {str(e)}")
-                
-                # Store the optimized ICPs
+                # Run all async tasks together
+                all_optimized_icps = asyncio.run(
+                    _process_all_icps_concurrently(queries, limit, batcher, progress_bar, progress_text)
+                )
                 st.session_state.optimized_icps = all_optimized_icps
                 
-                # Append results to the spreadsheet
                 progress_text.text("Saving all results to Google Sheets...")
-                progress_bar.progress(0.9)  # 90% done
+                progress_bar.progress(0.95)  # Progress before sheet append
                 
-                try:
-                    # Append all ICPs to the sheet
-                    append_icp_results(all_optimized_icps)
+                if any(icp['result_count'] > 0 for icp in all_optimized_icps):
+                    append_icp_results(all_optimized_icps)  # This is a sync function
                     progress_text.text("✅ Results saved successfully to Google Sheets!")
-                except Exception as e:
-                    st.error(f"Error saving to Google Sheets: {str(e)}")
-                
-                # Mark as complete
+                else:
+                    progress_text.text("✅ Processing complete. No new profiles found to save.")
+
                 progress_bar.progress(1.0)
-                
-                # Switch to results page
                 st.session_state.page = 'results'
                 st.rerun()
                 
             except Exception as e:
                 st.error(f"Error during processing: {str(e)}")
+                logger.error(f"Overall processing error: {traceback.format_exc()}")
                 st.button("Go back to setup", on_click=lambda: setattr(st.session_state, 'page', 'setup'))
                 
         # Handle results page in the Generate tab
@@ -1032,9 +1049,9 @@ def main():
                                 "Title": st.column_config.TextColumn("Title", disabled=True),
                                 "Connection Msg": st.column_config.TextColumn("Connection Msg", width="large"),
                                 "Comment Msg": st.column_config.TextColumn("Comment Msg", width="large"),
-                                "F/U‑1": st.column_config.TextColumn("Follow-up 1", width="large"),
-                                "F/U‑2": st.column_config.TextColumn("Follow-up 2", width="large"),
-                                "F/U‑3": st.column_config.TextColumn("Follow-up 3", width="large"),
+                                "FU-1": st.column_config.TextColumn("Follow-up 1", width="large"),
+                                "FU-2": st.column_config.TextColumn("Follow-up 2", width="large"),
+                                "FU-3": st.column_config.TextColumn("Follow-up 3", width="large"),
                                 "Connection State": st.column_config.TextColumn("Connection State", disabled=True),
                                 "Contact Status": st.column_config.TextColumn("Contact Status", disabled=True),
                                 "Recommended Action": st.column_config.TextColumn("Recommended Action", disabled=True),
@@ -1089,11 +1106,11 @@ def main():
                         with st.expander("Follow-up Timing", expanded=False):
                             col1, col2, col3 = st.columns(3)
                             with col1:
-                                follow1 = st.number_input("Days until follow‑up 1", 1, 30, 3)
+                                follow1 = st.number_input("Days until follow-up 1", 1, 30, 3)
                             with col2:
-                                follow2 = st.number_input("Days until follow‑up 2", 1, 60, 7)
+                                follow2 = st.number_input("Days until follow-up 2", 1, 60, 7)
                             with col3:
-                                follow3 = st.number_input("Days until follow‑up 3", 1, 90, 14)
+                                follow3 = st.number_input("Days until follow-up 3", 1, 90, 14)
                         
                         # Schedule option - only show if we're not just generating messages
                         if mode != "Generate only":
@@ -1119,47 +1136,64 @@ def main():
                         
                         # When the launch button is clicked, generate personalized messages and run campaign
                         if st.button(f"Launch {button_text} Campaign", use_container_width=True):
-                            # Get the target profiles
-                            if selected_indices:
-                                targets = []
-                                for i, row in edited_df.iterrows():
-                                    if i in selected_indices:
-                                        # Ensure the row has a linkedin_url which is required for Profile
-                                        if "LinkedIn URL" in row and row["LinkedIn URL"]:
-                                            # Convert DataFrame row to dict and filter only keys that are in Profile annotations
-                                            profile_data = {k: v for k, v in row.items() if k in Profile.__annotations__}
-                                            
-                                            # Map sheet column names to Profile field names (e.g., "LinkedIn URL" -> "linkedin_url")
-                                            if "LinkedIn URL" in row and "linkedin_url" not in profile_data:
-                                                profile_data["linkedin_url"] = row["LinkedIn URL"]
-                                                
-                                            try:
-                                                targets.append(Profile(**profile_data))
-                                            except Exception as e:
-                                                st.error(f"Error creating Profile object: {str(e)}")
-                                        else:
-                                            st.warning(f"Skipping row with missing LinkedIn URL: {row.get('First Name', '')} {row.get('Last Name', '')}")
-                            else:
-                                targets = []
-                                for _, row in edited_df.iterrows():
-                                    # Ensure the row has a linkedin_url which is required for Profile
-                                    if "LinkedIn URL" in row and row["LinkedIn URL"]:
-                                        # Convert DataFrame row to dict and filter only keys that are in Profile annotations
-                                        profile_data = {k: v for k, v in row.items() if k in Profile.__annotations__}
-                                        
-                                        # Map sheet column names to Profile field names (e.g., "LinkedIn URL" -> "linkedin_url")
-                                        if "LinkedIn URL" in row and "linkedin_url" not in profile_data:
-                                            profile_data["linkedin_url"] = row["LinkedIn URL"]
-                                            
-                                        try:
-                                            targets.append(Profile(**profile_data))
-                                        except Exception as e:
-                                            st.error(f"Error creating Profile object: {str(e)}")
-                                    else:
-                                        st.warning(f"Skipping row with missing LinkedIn URL: {row.get('First Name', '')} {row.get('Last Name', '')}")
-                                
-                            targets = targets[:limit]  # Apply the limit
+                            # Define the mapping from sheet columns to Profile model attributes
+                            sheet_to_profile_map = {
+                                "LinkedIn URL": "linkedin_url",
+                                "Title": "title",
+                                "First Name": "first_name",
+                                "Last Name": "last_name",
+                                "Company": "company",
+                                "Location": "location",
+                                "Description": "description",
+                                "Profile Image URL": "profile_image_url",
+                                "Connection Msg": "connection_msg",
+                                "Comment Msg": "comment_msg",
+                                "FU-1": "followup1",
+                                "FU-2": "followup2",
+                                "FU-3": "followup3",
+                                "InMail": "inmail",
+                                "Contact Status": "contact_status",
+                                "Connection State": "connection_state",
+                                "Follower Cnt": "followers_count",
+                                # Add other fields if they exist in Profile model and sheet
+                            }
+
+                            targets = []
+                            processed_rows_df = edited_df.iloc[selected_indices] if selected_indices else edited_df
                             
+                            for _, row_series in processed_rows_df.iterrows():
+                                row = row_series.to_dict() # Convert Series to Dict
+                                profile_dict_for_model = {}
+                                
+                                for sheet_col, model_attr in sheet_to_profile_map.items():
+                                    if sheet_col in row:
+                                        profile_dict_for_model[model_attr] = row[sheet_col]
+                                
+                                # Ensure required fields like linkedin_url are present and not empty
+                                if not profile_dict_for_model.get("linkedin_url"):
+                                    st.warning(f"Skipping row, missing or empty LinkedIn URL: {row.get('First Name', '')} {row.get('Last Name', '')}")
+                                    continue
+
+                                # Handle potential type issues, e.g., followers_count should be int
+                                if "followers_count" in profile_dict_for_model:
+                                    fc_val = profile_dict_for_model["followers_count"]
+                                    if fc_val == "" or fc_val is None:
+                                        profile_dict_for_model["followers_count"] = 0
+                                    else:
+                                        try:
+                                            profile_dict_for_model["followers_count"] = int(fc_val)
+                                        except ValueError:
+                                            logger.warning(f"Could not convert followers_count '{fc_val}' to int for {profile_dict_for_model.get('linkedin_url')}. Defaulting to 0.")
+                                            profile_dict_for_model["followers_count"] = 0
+                                
+                                try:
+                                    targets.append(Profile(**profile_dict_for_model))
+                                except Exception as e:
+                                    st.error(f"Error creating Profile object from row {profile_dict_for_model.get('linkedin_url', 'N/A')}: {str(e)}.")
+                                    logger.error(f"Data causing Profile creation error: {profile_dict_for_model}")
+                            
+                            targets = targets[:limit] # Apply the limit
+
                             # Don't regenerate messages if "Generate only" mode is not selected and messages exist
                             should_generate_messages = True
                             if mode != "Generate only":
