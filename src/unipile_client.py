@@ -35,10 +35,27 @@ class UnipileClient:
                         wait=tenacity.wait_exponential(multiplier=1, min=2, max=8),
                         reraise=True)
         async def do():
-            r = await self.session.request(method, url, **kw)
-            if r.status_code==401: raise UnipileAuthError("Bad key / account id")
-            r.raise_for_status()
-            return r.json()
+            try:
+                r = await self.session.request(method, url, **kw)
+                if r.status_code==401: raise UnipileAuthError("Bad key / account id")
+                r.raise_for_status()
+                return r.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error {e.response.status_code} for {method} {url}: {str(e)}")
+                if e.response.status_code == 429:
+                    logger.warning("Rate limit exceeded. Retrying with backoff...")
+                elif e.response.status_code == 404:
+                    logger.error(f"Resource not found: {path}")
+                elif e.response.status_code >= 500:
+                    logger.error(f"Server error from Unipile API")
+                raise
+            except httpx.RequestError as e:
+                logger.error(f"Request error for {method} {url}: {str(e)}")
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error for {method} {url}: {str(e)}")
+                raise
+                
         return await do()
 
     # helper endpoints
@@ -52,13 +69,42 @@ class UnipileClient:
             params={"account_id": self.account_id}
         )
 
-    async def recent_posts(self, provider_id:str, limit:int=3)->List[Dict]:
-        """Get recent posts from a LinkedIn profile"""
-        return await self._request(
-            "GET", 
-            f"/users/{provider_id}/posts",
-            params={"account_id": self.account_id, "limit": limit}
-        )
+    async def recent_posts(self, provider_id: str, limit: int = 5) -> List[Dict]:
+        """
+        Fetch recent posts from a LinkedIn profile.
+        
+        Args:
+            provider_id: The provider-specific ID for the LinkedIn profile
+            limit: Maximum number of posts to retrieve
+            
+        Returns:
+            List of post objects
+        """
+        try:
+            params = {
+                "account_id": self.account_id,
+                "limit": limit
+            }
+            
+            # Use the proper endpoint format with the provider_id
+            response = await self._request(
+                "GET", 
+                f"/linkedin/users/{provider_id}/posts", 
+                params=params
+            )
+            
+            # Ensure we always return a list
+            items = response.get("items", [])
+            if not isinstance(items, list):
+                logger.warning(f"Expected list from posts API but got {type(items)}")
+                return []
+                
+            return items
+            
+        except Exception as e:
+            logger.warning(f"Error fetching posts for {provider_id}: {e}")
+            # Return empty list instead of raising to make this non-fatal
+            return []
 
     async def send_invitation(self, provider_id:str, message:str, send_at:Optional[str]=None)->Dict:
         """Send a connection invitation to a LinkedIn profile"""
@@ -106,24 +152,39 @@ class UnipileClient:
     
     async def list_sent_invitations(self, limit:int=500)->List[Dict]:
         """Get list of sent invitations and their statuses"""
-        return await self._request(
-            "GET", "/linkinvitations",
-            params={"direction": "sent", "limit": limit, "account_id": self.account_id}
-        )
+        try:
+            # Use the working endpoint directly
+            return await self._request(
+                "GET", "/users/invitations",
+                params={"direction": "sent", "limit": limit, "account_id": self.account_id}
+            )
+        except Exception as e:
+            logger.error(f"Error fetching sent invitations: {str(e)}")
+            return []
 
     async def list_relations(self, limit:int=1000)->List[Dict]:
         """Get list of all relations and their connection states"""
-        return await self._request(
-            "GET", "/relations",
-            params={"limit": limit, "account_id": self.account_id}
-        )
+        try:
+            # Use the working endpoint directly
+            return await self._request(
+                "GET", "/users/relations",
+                params={"limit": limit, "account_id": self.account_id}
+            )
+        except Exception as e:
+            logger.error(f"Error fetching relations: {str(e)}")
+            return []
 
     async def list_conversations(self, limit:int=500)->List[Dict]:
         """Get list of conversations with unread counts and last message timestamps"""
-        return await self._request(
-            "GET", "/conversations",
-            params={"limit": limit, "account_id": self.account_id}
-        )
+        try:
+            # Use the working endpoint directly
+            return await self._request(
+                "GET", "/users/conversations",
+                params={"limit": limit, "account_id": self.account_id}
+            )
+        except Exception as e:
+            logger.error(f"Error fetching conversations: {str(e)}")
+            return []
             
     async def close(self):
         """Close the HTTP client session."""

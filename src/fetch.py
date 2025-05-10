@@ -29,7 +29,13 @@ async def fetch_profiles(query: str, start: int, num: int = 10) -> List[Dict]:
         "cx": cx_id,
         "q": query,
         "start": start,
-        "num": num
+        "num": num,
+        "sort": "date:r:1y", # Prioritize recent profiles
+        "safe": "active",
+        "filter": "0",   # No duplicate content filtering to ensure we get all profiles
+        "exactTerms": "linkedin profile",  # Ensure results mention "LinkedIn profile"
+        "lr": "lang_en",  # Prioritize English results
+        "fields": "items(title,link,snippet,pagemap)" # Optimize response size for efficiency
     }
     
     logger.debug(f"Fetching profiles with query: {query}, start: {start}")
@@ -60,6 +66,12 @@ async def _make_request(url: str, params: Dict) -> List[Dict]:
         List of search result items
     """
     async with aiohttp.ClientSession() as session:
+        # Log the query being sent (mask API key)
+        log_params = params.copy()
+        if 'key' in log_params:
+            log_params['key'] = 'MASKED'
+        logger.debug(f"Making API request with params: {log_params}")
+        
         async with session.get(url, params=params) as response:
             if response.status == 429:
                 logger.warning("Rate limit exceeded (429), retrying with backoff...")
@@ -76,6 +88,25 @@ async def _make_request(url: str, params: Dict) -> List[Dict]:
             
             data = await response.json()
             
+            # Log search information statistics
+            search_info = data.get('searchInformation', {})
+            total_results = search_info.get('totalResults', '0')
+            search_time = search_info.get('searchTime', 0)
+            logger.info(f"Search completed in {search_time}s with {total_results} total results")
+            
+            # Check for spelling corrections and log them
+            if 'spelling' in data:
+                corrected_query = data.get('spelling', {}).get('correctedQuery', '')
+                if corrected_query:
+                    logger.info(f"Google suggested spelling correction: '{corrected_query}'")
+            
             # Extract the items or return empty list if no results
             items = data.get("items", [])
+            
+            # Log some basic info about the results
+            if items:
+                logger.debug(f"Retrieved {len(items)} items for this page")
+            else:
+                logger.warning("No items found in search results")
+                
             return items 

@@ -85,32 +85,51 @@ def optimize_query_with_gemini(query_text):
     model = "gemini-2.5-flash-preview-04-17"
     
     prompt = f"""
-    You are an expert in crafting highly effective Google search queries, specifically for finding LinkedIn profiles via a Google Custom Search Engine (CSE) that is already configured to search *only* within LinkedIn.
+    You are a world-class expert in LinkedIn search optimization and Google dorking techniques, specializing in crafting highly precise search queries to find the exact LinkedIn profiles matching specific Ideal Customer Profile (ICP) criteria.
 
-    Your task is to transform the given "Original ICP criteria" into an OPTIMIZED, SINGLE-LINE Google search string.
+    Your task is to transform the given "Original ICP criteria" into a HIGHLY TARGETED, OPTIMIZED Google search string that will produce extremely accurate results when used with a Google Custom Search Engine (CSE) configured to search within LinkedIn.
 
-    **Key Guidelines for Optimization:**
+    **Advanced Optimization Guidelines:**
 
-    1.  **Preserve Core Intent:** The optimized query must accurately reflect ALL aspects of the original criteria. Do not add new concepts or omit existing ones.
-    2.  **Leverage Google Search Operators:**
-        *   Use `AND` (often implicit, but can be explicit for clarity), `OR` (for alternatives), `NOT` (or `-` prefix) for exclusions.
-        *   Use `"quotation marks"` for exact phrases (e.g., "Software Engineer", "Product Management").
-        *   Use `(parentheses)` for grouping complex conditions and controlling the order of operations.
-        *   Strategically use `site:linkedin.com/in/` at the beginning of the query. While the CSE is configured for LinkedIn, explicitly adding this can sometimes refine results further to personal profiles and is a good practice for general Google dorking.
-    3.  **Focus on LinkedIn Profile Keywords:** Think about terms most likely to appear directly in LinkedIn profiles:
-        *   Job titles (e.g., "Chief Technology Officer", "VP of Sales")
-        *   Skills (e.g., "Python", "Strategic Planning", "SaaS")
-        *   Industry terms (e.g., "Fintech", "Healthcare IT")
-        *   Company names (if relevant, use `("Company A" OR "Company B")`)
-        *   Location (e.g., "San Francisco Bay Area", "London")
-        *   Seniority indicators (e.g., "Director", "Manager", "Lead", "Senior")
-    4.  **Conciseness and Effectiveness:** Aim for a query that is as concise as possible while maximizing relevance and minimizing noise.
-    5.  **Structure:** Translate the *meaning* of the original criteria into a functional search string. Do not try to replicate the visual structure (like bullet points) of the input if it's not optimal for a search query.
+    1.  **Precision Over Recall:** Optimize for finding EXACTLY the right profiles, even if it means fewer results. It's better to find 10 perfect matches than 100 mediocre ones.
+    
+    2.  **Advanced Google Search Operators:**
+        * Use `AND` (often implicit, but explicit for clarity when needed)
+        * Use `OR` with parentheses for alternatives: `("VP Sales" OR "Sales Director")`
+        * Use exclusions with `-` prefix: `-intern -assistant -junior`
+        * Use exact phrases with quotes for multi-word concepts: `"product management"`
+        * Use wildcards sparingly: `"head * marketing"` 
+        * Use AROUND(n) for proximity searches: `marketing AROUND(3) director`
+        * For company targeting, use company name variations: `("Company A" OR "CompanyA" OR "Company-A")`
+    
+    3.  **LinkedIn-Specific Keyword Optimization:**
+        * **Job Titles:** Be comprehensive with exact titles AND functional equivalents
+          * Example: `("Chief Revenue Officer" OR "CRO" OR "VP Sales" OR "Head of Revenue" OR "Revenue Leader")`
+        * **Seniority:** Always be specific about seniority when it matters
+          * Example: `(executive OR C-level OR CXO OR chief OR head OR director OR VP OR "vice president")`
+        * **Industry Terms:** Use industry-specific terminology that professionals would list in their profiles
+          * Example for FinTech: `("payment processing" OR "digital banking" OR "financial technology" OR fintech OR "open banking")`
+        * **Location:** Include regional terms, abbreviations, and major cities
+          * Example: `("San Francisco Bay Area" OR SF OR "Bay Area" OR Oakland OR Berkeley OR "Silicon Valley" OR SV)`
+        * **Company Size/Stage:** Use terms professionals use in profiles
+          * Example: `("Series B" OR "Series C" OR "growth stage" OR scale-up OR scaleup OR "high growth")`
+    
+    4.  **Logical Structure:** Use nested parentheses to create a clear logical structure, with most important criteria first.
+       
+    5.  **Balance AND/OR Logic:** Make sure your query combines broad enough terms to find good matches while being specific enough to exclude irrelevant profiles.
 
     **Output Requirements:**
-    *   You MUST return ONLY the optimized search criteria text as a single, continuous string.
-    *   Do NOT include any explanations, labels (like "Optimized Query:"), or any other text before or after the search string.
-    *   Do not include the site linkedin.com/in/ in the search string as I am using a CSE that is already configured to search *only* within LinkedIn.
+    * Return ONLY the optimized search query as a single, continuous string.
+    * Do NOT include explanations, labels, or any text before/after the search string.
+    * Do NOT include site:linkedin.com/in/ as the CSE is already configured to search only within LinkedIn.
+
+    **Examples of Excellent Optimized Queries:**
+    
+    ORIGINAL: "Product managers at enterprise SaaS companies in Boston"
+    OPTIMIZED: ("product manager" OR "product management" OR "product owner" OR "senior product manager") ("enterprise software" OR "B2B SaaS" OR SaaS OR "software as a service") (Boston OR "greater boston area" OR massachusetts OR MA) -intern -junior -associate
+    
+    ORIGINAL: "Finance executives at Series B startups in Europe"
+    OPTIMIZED: ("CFO" OR "Chief Financial Officer" OR "VP Finance" OR "Head of Finance" OR "Finance Director") ("Series B" OR "Series C" OR "growth stage" OR "venture backed" OR "venture funded") ("Europe" OR "European Union" OR EU OR London OR Paris OR Berlin OR Amsterdam OR Madrid OR "Nordic" OR DACH)
 
     Original ICP criteria:
     {query_text}
@@ -224,6 +243,8 @@ async def run_scraper(optimized_icps, limit):
                 "LinkedIn URL": profile.linkedin_url,
                 "Title": profile.title or "",
                 "Name": f"{profile.first_name or ''} {profile.last_name or ''}".strip(),
+                "Company": profile.company if hasattr(profile, "company") else "",
+                "Location": profile.location if hasattr(profile, "location") else "",
                 "Description": profile.description or ""
             })
         
@@ -413,6 +434,26 @@ def get_relationship_stats(df):
     return stats
 
 
+def _determine_next_action(connection_state, contact_status, connection_actions, workflow_stages):
+    """Determine the next recommended action based on current status"""
+    if pd.isna(connection_state) or connection_state == "":
+        connection_state = "NOT_CONNECTED"
+    
+    if pd.isna(contact_status) or contact_status == "":
+        contact_status = "Not contacted"
+    
+    # First check workflow stage
+    if contact_status in workflow_stages:
+        return workflow_stages[contact_status][0]  # Return first recommended action
+    
+    # Then check connection state
+    if connection_state in connection_actions:
+        return connection_actions[connection_state][0]  # Return first recommended action
+    
+    # Default action if we can't determine
+    return "Generate messages"
+
+
 def main():
     # Initialize session state variables
     if 'page' not in st.session_state:
@@ -528,6 +569,131 @@ def main():
                     
                     # Buttons for adding and editing
                     col1, col2 = st.columns([1, 4])
+                    with col1:
+                        if st.button("Add ICP", use_container_width=True):
+                            if new_icp.strip():
+                                # Add the ICP to the list
+                                st.session_state.queries.append(new_icp.strip())
+                                save_queries_to_yaml(st.session_state.queries)
+                                
+                                # Set the clear input flag instead of directly modifying the widget value
+                                st.session_state.clear_input = True
+                                
+                                # Set a flag to show a notification
+                                st.session_state.show_success = True
+                                st.session_state.success_message = f"ICP #{len(st.session_state.queries)} added successfully!"
+                                
+                                # Rerun to refresh the UI
+                                st.rerun()
+                            else:
+                                st.error("❌ ICP criteria cannot be empty")
+                    
+                    # Show success message if flag is set
+                    if st.session_state.get('show_success', False):
+                        # Create a custom success notification
+                        st.markdown(
+                            f"""
+                            <div style="
+                                padding: 10px; 
+                                border-radius: 5px; 
+                                margin-bottom: 15px;
+                                background-color: #d1e7dd;
+                                border-left: 5px solid #0a3622;
+                                animation: fadeIn 0.5s;
+                            ">
+                                <div style="display: flex; align-items: center;">
+                                    <div style="font-size: 20px; margin-right: 10px;">✅</div>
+                                    <div style="font-weight: 500; color: #0a3622;">
+                                        {st.session_state.success_message}
+                                    </div>
+                                </div>
+                            </div>
+                            <style>
+                                @keyframes fadeIn {{
+                                    0% {{ opacity: 0; transform: translateY(-20px); }}
+                                    100% {{ opacity: 1; transform: translateY(0); }}
+                                }}
+                            </style>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                        
+                        # Clear the success flag after 3 seconds (on next rerun)
+                        # This is useful for subsequent adds
+                        if 'success_time' not in st.session_state:
+                            st.session_state.success_time = time.time()
+                        elif time.time() - st.session_state.success_time > 3:
+                            st.session_state.show_success = False
+                            st.session_state.pop('success_time', None)
+                    
+                    # Information about ICPs
+                    st.markdown("""
+                    ### Tips for effective ICPs
+                    - Describe your target professionals in natural language
+                    - Include job titles, industries, company types, and locations
+                    - Be specific about seniority levels when relevant
+                    - Mention company stages or sizes if important
+                    - Don't worry about search syntax - the AI will optimize your criteria
+                    """)
+                
+                with right_col:
+                    st.markdown("### Your ICPs")
+                    
+                    # Show existing ICPs with edit/delete options
+                    if not st.session_state.queries:
+                        st.info("No ICPs added yet. Add your first ICP on the left.")
+                    else:
+                        for i, query in enumerate(st.session_state.queries):
+                            with st.expander(f"ICP #{i+1}", expanded=False):
+                                st.code(query)
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    if st.button("Delete", key=f"delete_{i}"):
+                                        st.session_state.queries.pop(i)
+                                        save_queries_to_yaml(st.session_state.queries)
+                                        st.rerun()
+                                with col2:
+                                    if st.button("Edit", key=f"edit_{i}"):
+                                        # Store the ICP to edit and its index
+                                        st.session_state.editing_icp = query
+                                        st.session_state.editing_index = i
+                                        # Show the edit dialog
+                                        st.session_state.show_edit_dialog = True
+                                        st.rerun()
+                    
+                    # Edit dialog (if needed)
+                    if st.session_state.get('show_edit_dialog', False):
+                        with st.container():
+                            st.markdown("### Edit ICP")
+                            
+                            edited_icp = st.text_area(
+                                "Edit ICP criteria",
+                                value=st.session_state.editing_icp,
+                                height=100
+                            )
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("Save Changes"):
+                                    # Update the ICP
+                                    if edited_icp.strip():
+                                        st.session_state.queries[st.session_state.editing_index] = edited_icp
+                                        save_queries_to_yaml(st.session_state.queries)
+                                        st.success(f"✅ Updated ICP #{st.session_state.editing_index + 1}")
+                                        # Close the dialog
+                                        st.session_state.show_edit_dialog = False
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ ICP criteria cannot be empty")
+                            
+                            with col2:
+                                if st.button("Cancel"):
+                                    # Close the dialog without saving
+                                    st.session_state.show_edit_dialog = False
+                                    st.rerun()
+                    
+                    # Run settings after the ICPs
+                    st.markdown("---")
                     
                     # Run button - make this more prominent
                     st.markdown("### Run Settings")
@@ -615,7 +781,7 @@ def main():
                 progress_text.text(f"Processing {len(st.session_state.queries)} ICPs (max {limit} results each)...")
                 
                 # Create a shared batch processor for all queries
-                batcher = Batcher(rate_limit=2) 
+                batcher = Batcher(max_in_flight=5, delay=2)
                 
                 # Process all ICPs
                 all_optimized_icps = []
@@ -625,11 +791,24 @@ def main():
                     progress_bar.progress((i / len(st.session_state.queries)) * 0.2)  # Initial 20% for preparation
                     
                     try:
-                        icp_data = asyncio.run(process_query(query, limit=limit, batcher=batcher))
+                        # Optimize the query first
+                        optimized_query = optimize_query_with_gemini(query)
+                        
+                        # Process the query to get results
+                        query_results = asyncio.run(process_query(optimized_query, limit=limit, batcher=batcher))
+                        
+                        # Structure the data with necessary fields
+                        icp_data = {
+                            "original": query,
+                            "optimized": optimized_query,
+                            "results": query_results,
+                            "result_count": len(query_results)
+                        }
+                        
                         all_optimized_icps.append(icp_data)
                         
                         # Update progress
-                        progress_text.text(f"Processed ICP #{i+1}: Found {icp_data.get('result_count', 0)} matching profiles")
+                        progress_text.text(f"Processed ICP #{i+1}: Found {len(query_results)} matching profiles")
                         progress_bar.progress(0.2 + (i / len(st.session_state.queries)) * 0.6)  # 20-80% for processing
                     except Exception as e:
                         st.error(f"Error processing ICP #{i+1}: {str(e)}")
@@ -679,8 +858,8 @@ def main():
                         "LinkedIn URL": profile.linkedin_url,
                         "Title": profile.title or "",
                         "Name": f"{profile.first_name or ''} {profile.last_name or ''}".strip(),
-                        "First Name": profile.first_name or "",
-                        "Last Name": profile.last_name or "",
+                        "Company": profile.company if hasattr(profile, "company") else "",
+                        "Location": profile.location if hasattr(profile, "location") else "",
                         "Description": profile.description or ""
                     })
                 
@@ -748,11 +927,41 @@ def main():
                     df = pd.DataFrame(data)
                     
                     if not df.empty:
+                        # Set default values for missing status fields
+                        if "Contact Status" not in df.columns or df["Contact Status"].isna().all():
+                            df["Contact Status"] = "Not contacted"
+                        else:
+                            # Fill NA values with "Not contacted"
+                            df["Contact Status"] = df["Contact Status"].fillna("Not contacted")
+                            
+                        if "Connection State" not in df.columns or df["Connection State"].isna().all():
+                            df["Connection State"] = "NOT_CONNECTED"
+                        else:
+                            # Fill NA values with "NOT_CONNECTED"
+                            df["Connection State"] = df["Connection State"].fillna("NOT_CONNECTED")
+                        
+                        # Define workflow stages and valid transitions
+                        workflow_stages = {
+                            "Not contacted": ["Generate messages", "Invite", "Mark contacted"],
+                            "Messages generated": ["Invite", "Edit messages", "Mark contacted"],
+                            "Invited": ["Follow up", "Mark connected"],
+                            "Message sent": ["Follow up", "Mark responded"],
+                            "Follow-up sent": ["Follow up again", "Mark responded"],
+                        }
+                        
+                        # Map Connection State to recommended actions
+                        connection_actions = {
+                            "NOT_CONNECTED": ["Invite", "Generate messages"],
+                            "INVITED": ["Wait for acceptance", "Follow up"],
+                            "PENDING": ["Wait for acceptance", "Follow up"],
+                            "CONNECTED": ["Send message", "Follow up"]
+                        }
+                        
                         # Filter for profiles to message
                         st.subheader("Filter Profiles")
                         
                         # Add filters
-                        filter_col1, filter_col2 = st.columns(2)
+                        filter_col1, filter_col2, filter_col3 = st.columns(3)
                         
                         with filter_col1:
                             connection_filter = st.multiselect(
@@ -765,20 +974,50 @@ def main():
                         with filter_col2:
                             contact_status_filter = st.multiselect(
                                 "Contact Status",
-                                options=["", "Not contacted", "Invited", "Message sent", "Follow-up sent"],
+                                options=["", "Not contacted", "Messages generated", "Invited", "Message sent", "Follow-up sent"],
                                 default=["Not contacted"],
                                 help="Filter by previous contact status"
+                            )
+                            
+                        with filter_col3:
+                            recommended_action = st.selectbox(
+                                "Recommended Action",
+                                options=["All actions", "Need to invite", "Need to generate messages", "Need to follow up", "Connected profiles"],
+                                index=0,
+                                help="Filter by recommended next action"
                             )
                         
                         # Apply filters
                         filtered_df = df
+                        
+                        # Apply Connection State filter
                         if connection_filter:
                             filtered_df = filtered_df[filtered_df["Connection State"].isin(connection_filter) | 
                                                     (filtered_df["Connection State"].isnull() & ("" in connection_filter))]
                         
+                        # Apply Contact Status filter
                         if contact_status_filter:
                             filtered_df = filtered_df[filtered_df["Contact Status"].isin(contact_status_filter) | 
                                                     (filtered_df["Contact Status"].isnull() & ("" in contact_status_filter))]
+                        
+                        # Apply Recommended Action filter
+                        if recommended_action != "All actions":
+                            if recommended_action == "Need to invite":
+                                filtered_df = filtered_df[(filtered_df["Connection State"] == "NOT_CONNECTED") & 
+                                                         (filtered_df["Contact Status"].isin(["Not contacted", "Messages generated"]))]
+                            elif recommended_action == "Need to generate messages":
+                                filtered_df = filtered_df[filtered_df["Contact Status"] == "Not contacted"]
+                            elif recommended_action == "Need to follow up":
+                                filtered_df = filtered_df[(filtered_df["Connection State"].isin(["INVITED", "PENDING", "CONNECTED"])) & 
+                                                         (filtered_df["Contact Status"].isin(["Invited", "Message sent", "Follow-up sent"]))]
+                            elif recommended_action == "Connected profiles":
+                                filtered_df = filtered_df[filtered_df["Connection State"] == "CONNECTED"]
+                                
+                        # Add recommended next action based on current statuses
+                        filtered_df["Recommended Action"] = filtered_df.apply(
+                            lambda row: _determine_next_action(row["Connection State"], row["Contact Status"], connection_actions, workflow_stages),
+                            axis=1
+                        )
                         
                         # Display filtered profiles with editable fields
                         st.subheader(f"Profiles to Process ({len(filtered_df)} matching)")
@@ -796,6 +1035,9 @@ def main():
                                 "F/U‑1": st.column_config.TextColumn("Follow-up 1", width="large"),
                                 "F/U‑2": st.column_config.TextColumn("Follow-up 2", width="large"),
                                 "F/U‑3": st.column_config.TextColumn("Follow-up 3", width="large"),
+                                "Connection State": st.column_config.TextColumn("Connection State", disabled=True),
+                                "Contact Status": st.column_config.TextColumn("Contact Status", disabled=True),
+                                "Recommended Action": st.column_config.TextColumn("Recommended Action", disabled=True),
                             },
                             hide_index=True,
                             use_container_width=True,
@@ -806,7 +1048,7 @@ def main():
                         selected_indices = st.multiselect(
                             "Select profiles to process", 
                             options=list(range(len(edited_df))),
-                            format_func=lambda i: f"{edited_df.iloc[i]['First Name']} {edited_df.iloc[i]['Last Name']} - {edited_df.iloc[i]['Title']}"
+                            format_func=lambda i: f"{edited_df.iloc[i]['First Name']} {edited_df.iloc[i]['Last Name']} - {edited_df.iloc[i]['Title']} ({edited_df.iloc[i]['Recommended Action']})"
                         )
                         
                         # Message generation options
@@ -815,10 +1057,31 @@ def main():
                         reuse_messages = st.checkbox("Re-use existing messages if present", value=True,
                                                     help="If checked, will use existing messages in the sheet. If unchecked, will re-generate all messages.")
                         
+                        # Determine available campaign modes based on selected profiles
+                        available_modes = ["Generate only"]
+                        
+                        if len(selected_indices) > 0:
+                            selected_profiles = edited_df.iloc[selected_indices]
+                            
+                            # Check if any profiles need invites
+                            if any(selected_profiles["Connection State"] == "NOT_CONNECTED"):
+                                available_modes.append("Invite only")
+                                available_modes.append("Invite + Comment")
+                            
+                            # Check if any profiles are already connected or pending
+                            if any(selected_profiles["Connection State"].isin(["CONNECTED", "PENDING", "INVITED"])):
+                                available_modes.append("Message only")
+                                
+                            # Always add the full option
+                            available_modes.append("Full (invite, comment, follow-ups)")
+                        else:
+                            # If no profiles selected, show all options
+                            available_modes = ["Generate only", "Invite only", "Invite + Comment", "Message only", "Full (invite, comment, follow-ups)"]
+                        
                         # Campaign mode selection
                         mode = st.radio(
                             "Campaign Mode", 
-                            ["Generate only", "Invite only", "Invite + Comment", "Full (invite, comment, follow-ups)"],
+                            available_modes,
                             help="Generate: just create messages, Invite: send connection requests, Full: all actions"
                         )
                         
@@ -832,102 +1095,139 @@ def main():
                             with col3:
                                 follow3 = st.number_input("Days until follow‑up 3", 1, 90, 14)
                         
-                        # Schedule option
-                        send_later = st.checkbox("Schedule for later", value=False, 
-                                                help="Schedule messages to be sent at a specific time")
-                        
-                        if send_later:
-                            send_date = st.date_input("Send date")
-                            send_time = st.time_input("Send time")
+                        # Schedule option - only show if we're not just generating messages
+                        if mode != "Generate only":
+                            send_later = st.checkbox("Schedule for later", value=False, 
+                                                    help="Schedule messages to be sent at a specific time")
+                            
+                            if send_later:
+                                send_date = st.date_input("Send date")
+                                send_time = st.time_input("Send time")
+                        else:
+                            send_later = False
                         
                         # Launch button
                         max_sends = len(selected_indices) if selected_indices else len(edited_df)
-                        limit = st.number_input("Maximum profiles to process in this run", 1, max_sends, 
-                                              min(10, max_sends))
+                        # Ensure max_sends is at least 1 to avoid the min_value error
+                        max_sends = max(1, max_sends)
+                        # Calculate a safe initial value (min of 10 and max_sends)
+                        initial_value = min(10, max_sends)
+                        limit = st.number_input("Maximum profiles to process in this run", 1, max_sends, initial_value)
                         
-                        if st.button("🚀 Send Messages", type="primary"):
-                            targets = []
-                            
+                        # Dynamic button text based on mode
+                        button_text = "Generate Messages" if mode == "Generate only" else "🚀 Send Messages"
+                        
+                        # When the launch button is clicked, generate personalized messages and run campaign
+                        if st.button(f"Launch {button_text} Campaign", use_container_width=True):
+                            # Get the target profiles
                             if selected_indices:
-                                # Use only selected rows
-                                for i in selected_indices[:limit]:
-                                    row = edited_df.iloc[i]
-                                    
-                                    # Get messages (existing or empty)
-                                    connection_msg = row["Connection Msg"] if reuse_messages and not pd.isna(row["Connection Msg"]) else ""
-                                    comment_msg = row["Comment Msg"] if reuse_messages and not pd.isna(row["Comment Msg"]) else ""
-                                    followup1 = row["F/U‑1"] if reuse_messages and not pd.isna(row["F/U‑1"]) else ""
-                                    followup2 = row["F/U‑2"] if reuse_messages and not pd.isna(row["F/U‑2"]) else ""
-                                    followup3 = row["F/U‑3"] if reuse_messages and not pd.isna(row["F/U‑3"]) else ""
-                                    inmail = row["InMail"] if "InMail" in row and reuse_messages and not pd.isna(row["InMail"]) else ""
-                                    
-                                    targets.append(Profile(
-                                        linkedin_url=row["LinkedIn URL"],
-                                        title=row["Title"],
-                                        first_name=row["First Name"],
-                                        last_name=row["Last Name"],
-                                        description=row["Description"],
-                                        profile_image_url=row["Profile Image URL"] if "Profile Image URL" in row else "",
-                                        connection_msg=connection_msg,
-                                        comment_msg=comment_msg,
-                                        followup1=followup1,
-                                        followup2=followup2,
-                                        followup3=followup3,
-                                        inmail=inmail
-                                    ))
+                                targets = [
+                                    Profile(**{k: v for k, v in row.items() if k in Profile.__annotations__})
+                                    for i, row in edited_df.iterrows() if i in selected_indices
+                                ]
                             else:
-                                # Use all filtered rows up to limit
-                                for i, row in edited_df.head(limit).iterrows():
-                                    # Similar code as above for getting messages
-                                    connection_msg = row["Connection Msg"] if reuse_messages and not pd.isna(row["Connection Msg"]) else ""
-                                    comment_msg = row["Comment Msg"] if reuse_messages and not pd.isna(row["Comment Msg"]) else ""
-                                    followup1 = row["F/U‑1"] if reuse_messages and not pd.isna(row["F/U‑1"]) else ""
-                                    followup2 = row["F/U‑2"] if reuse_messages and not pd.isna(row["F/U‑2"]) else ""
-                                    followup3 = row["F/U‑3"] if reuse_messages and not pd.isna(row["F/U‑3"]) else ""
-                                    inmail = row["InMail"] if "InMail" in row and reuse_messages and not pd.isna(row["InMail"]) else ""
-                                    
-                                    targets.append(Profile(
-                                        linkedin_url=row["LinkedIn URL"],
-                                        title=row["Title"],
-                                        first_name=row["First Name"],
-                                        last_name=row["Last Name"],
-                                        description=row["Description"],
-                                        profile_image_url=row["Profile Image URL"] if "Profile Image URL" in row else "",
-                                        connection_msg=connection_msg,
-                                        comment_msg=comment_msg,
-                                        followup1=followup1,
-                                        followup2=followup2,
-                                        followup3=followup3,
-                                        inmail=inmail
-                                    ))
+                                targets = [
+                                    Profile(**{k: v for k, v in row.items() if k in Profile.__annotations__})
+                                    for _, row in edited_df.iterrows()
+                                ]
+                                
+                            targets = targets[:limit]  # Apply the limit
                             
-                            # Run the campaign
-                            with st.spinner(f"Processing {len(targets)} profiles..."):
-                                follow_days = (follow1, follow2, follow3)
+                            # Don't regenerate messages if "Generate only" mode is not selected and messages exist
+                            should_generate_messages = True
+                            if mode != "Generate only":
+                                # Check if most targets already have messages
+                                messages_exist = all(
+                                    [p.connection_msg and len(p.connection_msg.strip()) > 0 for p in targets[:min(3, len(targets))]]
+                                )
+                                if messages_exist:
+                                    should_generate_messages = False
+                                    st.info("Using existing messages - skipping regeneration")
+                            
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            # Follow-up configuration
+                            follow_days = [follow1]
+                            if follow2 > 0:
+                                follow_days.append(follow2)
+                            if follow3 > 0:
+                                follow_days.append(follow3)
+                            
+                            # Schedule settings
+                            schedule_time = None
+                            if send_later:
+                                schedule_dt = datetime.combine(send_date, send_time)
+                                schedule_time = schedule_dt.isoformat()
                                 
-                                # Set schedule time if needed
-                                schedule_time = None
-                                if send_later:
-                                    schedule_dt = datetime.combine(send_date, send_time)
-                                    schedule_time = schedule_dt.isoformat()
-                                
-                                stats = asyncio.run(run_campaign(
-                                    profiles=targets,
-                                    followup_days=follow_days,
-                                    mode=mode,
-                                    spreadsheet_id=sheet_id,
-                                    sheet_name=selected_sheet,
-                                    schedule_time=schedule_time
-                                ))
-                                
-                                # Show results
-                                st.success(f"Campaign completed! Generated: {stats.generated}, Sent: {stats.sent}, Errors: {stats.errors}, Skipped: {stats.skipped}")
-                                
-                                # Add sync button
-                                if st.button("Sync Status Data"):
-                                    with st.spinner("Syncing status data..."):
-                                        sync_results = asyncio.run(sync_status(sheet_id, selected_sheet))
-                                        st.success(f"Sync completed! Updated {sync_results['updated']} records")
+                            stats = asyncio.run(run_campaign(
+                                profiles=targets,
+                                followup_days=follow_days,
+                                mode=mode,
+                                spreadsheet_id=sheet_id,
+                                sheet_name=selected_sheet,
+                                schedule_time=schedule_time,
+                                should_generate_messages=should_generate_messages
+                            ))
+                            
+                            # Show results
+                            st.success(f"Campaign completed! Generated: {stats.generated}, Sent: {stats.sent}, Errors: {stats.errors}, Skipped: {stats.skipped}")
+                            
+                            # If there were errors, show a detailed error section
+                            if stats.errors > 0:
+                                with st.expander(f"⚠️ {stats.errors} Error(s) Occurred", expanded=True):
+                                    st.warning("Check the Error Msg column in the sheet for details on each profile")
+                                    st.markdown("""
+                                    **Common campaign errors:**
+                                    - '0' means the profile couldn't be processed (often due to API limitations)
+                                    - Missing permissions or rate limits from LinkedIn
+                                    - Network connectivity issues
+                                    
+                                    Try again with fewer profiles or try later when API limits reset.
+                                    """)
+                            
+                            # Update status of processed profiles
+                            status_updates = {}
+                            
+                            if mode == "Generate only":
+                                status_updates["Contact Status"] = "Messages generated"
+                            elif mode == "Invite only":
+                                status_updates["Contact Status"] = "Invited"
+                            elif mode == "Invite + Comment":
+                                status_updates["Contact Status"] = "Invited"
+                            elif mode == "Message only":
+                                status_updates["Contact Status"] = "Message sent"
+                            elif mode == "Full (invite, comment, follow-ups)":
+                                status_updates["Contact Status"] = "Follow-up scheduled"
+                            
+                            # Update status in worksheet if we processed any profiles
+                            if status_updates and (stats.generated > 0 or stats.sent > 0):
+                                try:
+                                    # Get all records to find the row numbers
+                                    all_records = ws.get_all_records()
+                                    
+                                    # Update rows for each target
+                                    for profile in targets:
+                                        # Find matching row
+                                        for i, record in enumerate(all_records):
+                                            if record.get("LinkedIn URL") == profile.linkedin_url:
+                                                # Row is 1-indexed and we need to skip header row
+                                                row_num = i + 2
+                                                
+                                                # Update status fields
+                                                for field, value in status_updates.items():
+                                                    col_idx = list(all_records[0].keys()).index(field) + 1
+                                                    ws.update_cell(row_num, col_idx, value)
+                                        
+                                    st.info(f"Updated status for {len(targets)} profiles")
+                                except Exception as e:
+                                    st.warning(f"Could not update status in worksheet: {str(e)}")
+                            
+                            # Add sync button
+                            if st.button("Sync Status Data"):
+                                with st.spinner("Syncing status data..."):
+                                    sync_results = asyncio.run(sync_status(sheet_id, selected_sheet))
+                                    st.success(f"Sync completed! Updated {sync_results['updated']} records")
                     else:
                         st.warning("No profiles found in the selected sheet.")
                 except Exception as e:

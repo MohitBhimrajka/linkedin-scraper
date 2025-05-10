@@ -1,10 +1,13 @@
 import asyncio, pytz, datetime as dt
 from typing import List, Dict, Optional
-from src.unipile_client import UnipileClient
+from src.unipile_client import UnipileClient, UnipileAuthError
 from src.personalize import craft_messages
 from src.transform import Profile
 from src.logging_conf import logger
 import gspread
+import httpx
+import concurrent.futures
+from functools import partial
 
 class CampaignStats: 
     generated=0
@@ -12,198 +15,194 @@ class CampaignStats:
     errors=0
     skipped=0
 
+# Define specific API error handling
+class UnipileApiError(Exception):
+    pass
+
 async def run_campaign(
     profiles: List[Profile], 
     followup_days=(3,7,14), 
     mode="Full",
     spreadsheet_id: Optional[str] = None, 
     sheet_name: Optional[str] = None,
-    schedule_time: Optional[str] = None
+    schedule_time: Optional[str] = None,
+    should_generate_messages: bool = True,
+    max_parallel: int = 10
 ) -> CampaignStats:
     """
-    Run a LinkedIn outreach campaign on the specified profiles.
+    Generate personalized messages and/or launch a campaign.
     
     Args:
-        profiles: List of LinkedIn profiles to target
-        followup_days: Tuple of days to wait before sending follow-up messages
-        mode: Campaign mode - "Generate only", "Invite only", "Invite + Comment", or "Full"
-        spreadsheet_id: Google Sheet ID where profiles are stored
-        sheet_name: Sheet name where profiles are stored
-        schedule_time: Optional ISO-format datetime string to schedule message sending
+        profiles: List of LinkedIn profile data to process
+        followup_days: Tuple of days to wait for each follow-up
+        mode: "Generate only" or "Full" campaign
+        spreadsheet_id: Google Sheet ID for updating statuses
+        sheet_name: Specific worksheet name
+        schedule_time: ISO timestamp for scheduling
+        should_generate_messages: Whether to generate messages or use existing ones
+        max_parallel: Maximum number of concurrent operations
     
     Returns:
-        CampaignStats object with counts of actions taken
+        CampaignStats object with counts of generated/sent messages
     """
-    client = UnipileClient()  # uses env vars
     stats = CampaignStats()
-    utc = pytz.UTC
     
-    # Find the sheet if IDs are provided to update campaign messages
+    # Connect to Google Sheets API if IDs are provided
     worksheet = None
-    all_data = []
+    gc = None
     if spreadsheet_id and sheet_name:
         try:
-            from src.sheets import get_spreadsheet
-            spreadsheet = get_spreadsheet(spreadsheet_id)
-            worksheet = spreadsheet.worksheet(sheet_name)
-            # Get all data to find row indexes
-            all_data = worksheet.get_all_records()
+            # Use service account credentials for server deployments
+            gc = gspread.service_account(filename="config/service_account.json")
+            # Open the spreadsheet and specific worksheet
+            spread = gc.open_by_key(spreadsheet_id)
+            worksheet = spread.worksheet(sheet_name)
+            logger.info(f"Connected to Google Sheet '{sheet_name}'")
         except Exception as e:
-            logger.error(f"Failed to access sheet: {e}")
-            worksheet = None
+            logger.error(f"Failed to connect to Google Sheets: {e}")
     
-    for i, p in enumerate(profiles):
-        # Initialize row_idx outside the try block
-        row_idx = None
-        
-        try:
-            # 1 fetch enriched data (always do this regardless of mode)
-            pdata = await client.get_profile(p.linkedin_url)
-            # Get the provider_id from the API response
-            provider_id = pdata["provider_id"]  # Changed from 'id' to 'provider_id'
-            
-            # Always fetch posts to provide data for comments, regardless of mode
-            posts = await client.recent_posts(provider_id, limit=1)
-            recent = posts[0]["text"] if posts else ""
-            
-            # Normalize follower count field for consistency
-            pdata["followers_count"] = pdata.get("followersCount", 0)
-            
-            # Store follower count in the profile object for sheets
-            p.followers_count = pdata["followers_count"]
-            
-            msgs = craft_messages(pdata, recent)
-            
-            # Ensure we always have non-empty values for all message types
-            if not msgs["comment"]:
-                headline = pdata.get("headline", "your industry")
-                msgs["comment"] = f"Really enjoyed reading about your work in {headline.split('|')[0].strip()}!"
+    # Create a Unipile client
+    client = UnipileClient()
+    
+    # Create tasks for batch processing profiles
+    tasks = []
+    semaphore = asyncio.Semaphore(max_parallel)
+    
+    async def process_profile(p, idx):
+        async with semaphore:
+            row_idx = None
+            try:
+                logger.info(f"Processing profile {idx+1}/{len(profiles)}: {p.linkedin_url}")
                 
-            # Make every column non-empty regardless of mode
-            for m in ("connection", "comment", "inmail_subject", "inmail_body"):
-                if not msgs.get(m):   # safety net
-                    msgs[m] = "—"     # an em-dash placeholder
-            
-            # Ensure followups are never empty
-            if not msgs.get("followups") or not any(msgs["followups"]):
-                msgs["followups"] = [
-                    "Hope you're having a great week! Wanted to share this article that relates to your work.",
-                    "Just came across this resource that might interest you given your background.",
-                    "Would value your perspective on a project I'm working on - any chance we could chat briefly?"
-                ]
-            
-            stats.generated += 1
-            
-            # Find and update the corresponding row in the sheet
-            if worksheet:
-                try:
-                    # Find row by LinkedIn URL (add 2 because of header and 1-based indexing)
-                    for idx, row in enumerate(all_data):
-                        if row.get("LinkedIn URL") == p.linkedin_url:
-                            row_idx = idx + 2  # +2 for header and 1-based indexing
-                            break
+                # 1. If message generation is needed, do that first
+                if should_generate_messages:
+                    # Generate personalized messages based on the profile data
+                    msgs = await craft_messages(p)
                     
-                    if row_idx:
-                        now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
+                    # Update the profile object with the generated messages
+                    p.connection_msg = msgs["connection"]
+                    p.comment_msg = msgs["comment"]
+                    p.followup1 = msgs["followups"][0] if len(msgs["followups"]) > 0 else ""
+                    p.followup2 = msgs["followups"][1] if len(msgs["followups"]) > 1 else ""
+                    p.followup3 = msgs["followups"][2] if len(msgs["followups"]) > 2 else ""
+                    
+                    stats.generated += 1
+                else:
+                    # Use existing messages from the profile
+                    msgs = {
+                        "connection": p.connection_msg or "",
+                        "comment": p.comment_msg or "",
+                        "followups": [
+                            p.followup1 or "",
+                            p.followup2 or "",
+                            p.followup3 or ""
+                        ]
+                    }
+                
+                # 2. Find the row in the Google Sheet (if applicable)
+                if worksheet:
+                    try:
+                        # Find the row with this LinkedIn URL
+                        cell = worksheet.find(p.linkedin_url)
+                        row_idx = cell.row
                         
-                        # Prepare all updates as a batch to minimize API calls
-                        cell_updates = [
+                        # Update the message cells in the sheet
+                        batch_updates = [
                             {"range": f"G{row_idx}", "values": [[msgs["connection"]]]},
                             {"range": f"H{row_idx}", "values": [[msgs["comment"]]]},
                             {"range": f"I{row_idx}", "values": [[msgs["followups"][0] if len(msgs["followups"]) > 0 else "—"]]},
                             {"range": f"J{row_idx}", "values": [[msgs["followups"][1] if len(msgs["followups"]) > 1 else "—"]]},
-                            {"range": f"K{row_idx}", "values": [[msgs["followups"][2] if len(msgs["followups"]) > 2 else "—"]]},
-                            {"range": f"L{row_idx}", "values": [[f"Subject: {msgs['inmail_subject']}\nBody: {msgs['inmail_body']}"]]},
-                            {"range": f"M{row_idx}", "values": [["GENERATED"]]},
-                            {"range": f"N{row_idx}", "values": [[now]]},
-                            {"range": f"P{row_idx}", "values": [[str(p.followers_count)]]}  # Store followers count in a new column
+                            {"range": f"K{row_idx}", "values": [[msgs["followups"][2] if len(msgs["followups"]) > 2 else "—"]]}
                         ]
-                        
-                        # Execute the batch update
-                        worksheet.batch_update(cell_updates)
-                        logger.info(f"Updated messages for {p.linkedin_url} in sheet")
-                        
-                except Exception as e:
-                    logger.error(f"Failed to update sheet for {p.linkedin_url}: {str(e)}")
-            
-            # Skip API calls if in generate-only mode
-            if mode == "Generate only":
-                stats.skipped += 1
-                continue
-            
-            # 2 send invitation (for all modes except "Generate only")
-            # Use the invitation API to send connection request, with optional scheduling
-            await client.send_invitation(
-                provider_id=provider_id, 
-                message=msgs["connection"],
-                send_at=schedule_time
-            )
-            
-            # Update status in sheet
-            if worksheet and row_idx:
-                status_value = "SCHEDULED" if schedule_time else "INVITED"
-                now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                worksheet.batch_update([
-                    {"range": f"M{row_idx}", "values": [[status_value]]},
-                    {"range": f"N{row_idx}", "values": [[now]]}
-                ])
-            
-            # 3 comment (for "Invite + Comment" and "Full" modes)
-            if (mode == "Invite + Comment" or mode == "Full") and posts:
-                await client.comment_post(
-                    post_id=posts[0]["id"], 
-                    message=msgs["comment"],
-                    send_at=schedule_time
-                )
+                        worksheet.batch_update(batch_updates)
+                        logger.info(f"Updated messages for row {row_idx}")
+                    except Exception as e:
+                        logger.warning(f"Could not update sheet for {p.linkedin_url}: {e}")
                 
-                # Update status in sheet
-                if worksheet and row_idx:
-                    status_value = "SCHEDULED" if schedule_time else "COMMENTED"
-                    now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                    worksheet.batch_update([
-                        {"range": f"M{row_idx}", "values": [[status_value]]},
-                        {"range": f"N{row_idx}", "values": [[now]]}
-                    ])
-
-            # 4 store follow-ups in sheet (don't schedule yet)
-            # Real conversation ID only exists after invite acceptance
-            # Instead of scheduling via API now, we'll store messages in the sheet
-            # and implement a separate process to check invitation status and send follow-ups later
-            
-            # We still calculate intended follow-up dates for reference
-            now = dt.datetime.now(dt.UTC).replace(tzinfo=utc)
-            followup_dates = []
-            for j in range(len(msgs["followups"])):  # Changed i to j to avoid variable reuse
-                followup_dates.append((now + dt.timedelta(days=followup_days[j])).isoformat())
-            
-            # Mark follow-ups as ready if in Full mode
-            if mode == "Full" and worksheet and row_idx:
-                worksheet.batch_update([
-                    {"range": f"M{row_idx}", "values": [["FOLLOW-UPS READY"]]},
-                    {"range": f"N{row_idx}", "values": [[now.isoformat()]]}
-                ])
+                # Skip API calls if in generate-only mode
+                if mode == "Generate only":
+                    stats.skipped += 1
+                    return
                 
-                # In a real implementation, we would store the user ID and the follow-up dates
-                # in a separate table or queue for a background worker to process
-            
-            stats.sent += 1
-        except Exception as e:
-            stats.errors += 1
-            logger.error(f"Campaign error for {p.linkedin_url}: {e}")
-            
-            # Update status in sheet to show error - only if worksheet and row_idx are valid
-            if worksheet and row_idx:
+                # 3. Get the LinkedIn provider_id for API calls
+                # Fetch profile data to get the provider_id
+                logger.info(f"Fetching profile data for {p.linkedin_url}")
+                pdata = await client.get_profile(p.linkedin_url)
+                provider_id = pdata["provider_id"]  # Get the correct provider_id field
+                logger.info(f"Retrieved provider_id: {provider_id}")
+                
+                # 4. Always fetch posts to provide data for comments
                 try:
-                    now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
-                    worksheet.batch_update([
-                        {"range": f"M{row_idx}", "values": [["ERROR"]]},
-                        {"range": f"N{row_idx}", "values": [[now]]},
-                        {"range": f"O{row_idx}", "values": [[str(e)]]}
-                    ])
-                except Exception as sheet_error:
-                    logger.error(f"Failed to update error status in sheet: {sheet_error}")
+                    logger.info(f"Fetching recent posts for {provider_id}")
+                    posts = await client.recent_posts(provider_id=provider_id, limit=1)
+                    # Check posts is a proper list
+                    if not isinstance(posts, list):
+                        logger.warning(f"Unexpected posts data structure received: {type(posts)}")
+                        posts = []
+                    recent = posts[0]["text"] if posts and len(posts) > 0 else ""
+                except IndexError:
+                    logger.warning(f"No posts found for {provider_id}")
+                    recent = ""
+                    posts = []
+                except KeyError as e:
+                    logger.warning(f"Missing key in post data for {provider_id}: {e}")
+                    recent = ""
+                    posts = []
+                except Exception as e:
+                    # Non-fatal error for posts
+                    logger.warning(f"Failed to fetch posts for {provider_id}: {e}")
+                    recent = ""
+                    posts = []
+                
+                # 5. Send invitation with connection message
+                try:
+                    logger.info(f"Sending invitation to {provider_id}" + (f" scheduled for {schedule_time}" if schedule_time else ""))
+                    await client.send_invitation(
+                        provider_id=provider_id, 
+                        message=msgs["connection"],
+                        send_at=schedule_time
+                    )
+                    
+                    # Update stats and sheet
+                    stats.sent += 1
+                    if worksheet and row_idx:
+                        now = dt.datetime.now(dt.UTC).isoformat()
+                        status_updates = [
+                            {"range": f"M{row_idx}", "values": [["Invited"]]},
+                            {"range": f"N{row_idx}", "values": [[now]]},
+                        ]
+                        worksheet.batch_update(status_updates)
+                except Exception as e:
+                    # If sending fails but message generation succeeded
+                    logger.error(f"Failed to send invitation to {provider_id}: {e}")
+                    if worksheet and row_idx:
+                        now = dt.datetime.now(dt.UTC).isoformat()
+                        error_updates = [
+                            {"range": f"M{row_idx}", "values": [["Error"]]},
+                            {"range": f"N{row_idx}", "values": [[now]]},
+                            {"range": f"O{row_idx}", "values": [[str(e)]]}
+                        ]
+                        worksheet.batch_update(error_updates)
+                    stats.errors += 1
+                
+            except Exception as e:
+                stats.errors += 1
+                error_message = str(e) if str(e).strip() else "Unknown error occurred during campaign processing"
+                logger.error(f"Campaign error for {p.linkedin_url}: {error_message}")
+                
+                if worksheet and row_idx:
+                    try:
+                        now = dt.datetime.now(dt.UTC).isoformat()
+                        worksheet.batch_update([
+                            {"range": f"M{row_idx}", "values": [["Error"]]},
+                            {"range": f"N{row_idx}", "values": [[now]]},
+                            {"range": f"O{row_idx}", "values": [[error_message]]}
+                        ])
+                    except Exception as update_error:
+                        logger.error(f"Failed to update error in sheet: {update_error}")
     
-    # Close the client connection
-    await client.close()
+    # Create and gather all profile processing tasks
+    tasks = [process_profile(p, i) for i, p in enumerate(profiles)]
+    await asyncio.gather(*tasks)
     
     return stats 

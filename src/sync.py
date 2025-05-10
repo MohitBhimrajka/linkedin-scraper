@@ -21,7 +21,8 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
         "processed": 0,
         "updated": 0,
         "errors": 0,
-        "not_found": 0
+        "not_found": 0,
+        "api_errors": 0
     }
     
     try:
@@ -38,19 +39,36 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
         cli = UnipileClient()
         
         # Pull data once to avoid N² API calls
+        invites = {}
+        relations = {}
+        conversations = {}
+        
+        # Try to get invitations - don't fail if this API call doesn't work
         try:
             invites = {i.get("provider_id", ""): i for i in await cli.list_sent_invitations()}
             logger.info(f"Loaded {len(invites)} sent invitations")
-            
+        except Exception as e:
+            logger.error(f"Error fetching invitations: {str(e)}")
+            stats["api_errors"] += 1
+            # Continue with empty invites
+        
+        # Try to get relations - don't fail if this API call doesn't work
+        try:
             relations = {r.get("provider_id", ""): r for r in await cli.list_relations()}
             logger.info(f"Loaded {len(relations)} relations")
-            
+        except Exception as e:
+            logger.error(f"Error fetching relations: {str(e)}")
+            stats["api_errors"] += 1
+            # Continue with empty relations
+        
+        # Try to get conversations - don't fail if this API call doesn't work
+        try:
             conversations = {c.get("provider_id", ""): c for c in await cli.list_conversations()}
             logger.info(f"Loaded {len(conversations)} conversations")
         except Exception as e:
-            logger.error(f"Error fetching Unipile data: {str(e)}")
-            await cli.close()
-            raise
+            logger.error(f"Error fetching conversations: {str(e)}")
+            stats["api_errors"] += 1
+            # Continue with empty conversations
         
         # Process each row
         row_indices = specific_rows if specific_rows else range(len(rows))
@@ -75,6 +93,13 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
                         if ident in pid:
                             provider_id = pid
                             break
+                    
+                    # If still not found, check in relations data
+                    if not provider_id:
+                        for pid, relation_data in relations.items():
+                            if ident in pid:
+                                provider_id = pid
+                                break
                 
                 if not provider_id:
                     stats["not_found"] += 1
@@ -114,8 +139,17 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
                 
                 # Apply updates if we have any
                 if updates:
+                    # Update in batches of 5 to avoid API rate limits
+                    batch_updates = []
                     for col, value in updates.items():
-                        ws.update(f"{col}{sheet_row}", value)
+                        batch_updates.append({
+                            "range": f"{col}{sheet_row}", 
+                            "values": [[value]]
+                        })
+                    
+                    # Apply batch update
+                    if batch_updates:
+                        ws.batch_update(batch_updates)
                     stats["updated"] += 1
                 
             except Exception as e:
@@ -128,4 +162,8 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
     
     except Exception as e:
         logger.error(f"Error in sync_status: {str(e)}")
+        try:
+            await cli.close()
+        except:
+            pass
         raise 

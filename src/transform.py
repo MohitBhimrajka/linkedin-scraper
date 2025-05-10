@@ -16,6 +16,16 @@ class Profile(BaseModel):
     description: Optional[str] = None
     profile_image_url: Optional[str] = None
     followers_count: Optional[int] = 0  # Added followers count field
+    connection_state: Optional[str] = "NOT_CONNECTED"  # Default connection state
+    contact_status: Optional[str] = "Not contacted"  # Default contact status
+    connection_msg: Optional[str] = ""  # Connection message
+    comment_msg: Optional[str] = ""  # Comment message
+    followup1: Optional[str] = ""  # First follow-up message
+    followup2: Optional[str] = ""  # Second follow-up message
+    followup3: Optional[str] = ""  # Third follow-up message
+    inmail: Optional[str] = ""  # InMail message
+    location: Optional[str] = None
+    company: Optional[str] = None
 
 
 def normalize_results(raw_items: List[Dict]) -> List[Profile]:
@@ -69,6 +79,13 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
     # Extract title (prefer metatags)
     title = metatags.get("profile:title") or metatags.get("og:title") or item.get("title", "")
     
+    # Clean the title - remove "LinkedIn" mentions and other common suffixes
+    if title:
+        for suffix in [" | LinkedIn", " - LinkedIn", " – LinkedIn", ", LinkedIn"]:
+            if title.endswith(suffix):
+                title = title[:-(len(suffix))]
+                break
+    
     # Extract name parts if available
     name_parts = parse_name(metatags.get("profile:first_name", ""), 
                            metatags.get("profile:last_name", ""),
@@ -78,6 +95,15 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
     description = (metatags.get("og:description") or 
                   metatags.get("description") or 
                   item.get("snippet", ""))
+    
+    # Clean description - remove common LinkedIn phrases
+    if description:
+        for phrase in ["View my profile on LinkedIn", "See my complete profile on LinkedIn", 
+                      "View my professional profile on LinkedIn", "Find jobs at companies"]:
+            description = description.replace(phrase, "").strip()
+    
+    # Extract location from description or title if possible
+    location = extract_location(description, title)
     
     # Extract profile image (prefer twitter:image over og:image)
     profile_image_url = metatags.get("twitter:image") or metatags.get("og:image")
@@ -89,6 +115,17 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         elif "cse_thumbnail" in item["pagemap"]:
             profile_image_url = item["pagemap"]["cse_thumbnail"][0].get("src")
     
+    # Try to extract any additional structured data if available
+    structured_data = {}
+    if "pagemap" in item:
+        if "person" in item["pagemap"] and item["pagemap"]["person"]:
+            structured_data = item["pagemap"]["person"][0]
+        elif "jobposting" in item["pagemap"] and item["pagemap"]["jobposting"]:
+            structured_data = item["pagemap"]["jobposting"][0]
+    
+    # Extract company if available from structured data
+    company = structured_data.get("name") or structured_data.get("worksfor") or ""
+    
     return Profile(
         linkedin_url=linkedin_url,
         title=title,
@@ -96,8 +133,46 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         last_name=name_parts["last_name"],
         description=description,
         profile_image_url=profile_image_url,
-        followers_count=0  # Initialize to 0, will be updated with real data if available
+        followers_count=0,  # Initialize to 0, will be updated with real data if available
+        location=location,
+        company=company
     )
+
+
+def extract_location(description: str, title: str) -> Optional[str]:
+    """
+    Extract location from description or title if possible.
+    
+    Args:
+        description: Profile description
+        title: Profile title
+        
+    Returns:
+        Location string if found, None otherwise
+    """
+    # Common location patterns in LinkedIn profiles
+    location_indicators = [
+        " in ", " at ", " from ", "located in", "based in", 
+        "working in", "living in", "residing in"
+    ]
+    
+    # Try to find location in description
+    for indicator in location_indicators:
+        if indicator in description.lower():
+            parts = description.split(indicator, 1)
+            if len(parts) > 1:
+                location_part = parts[1].split(".")[0].split(",")[0].strip()
+                # Only return if it looks like a location (not too long)
+                if 2 <= len(location_part.split()) <= 5:
+                    return location_part
+    
+    # Check if location is in title format "Name - Title at Company (Location)"
+    if " - " in title and "(" in title and title.endswith(")"):
+        location = title.split("(")[-1].rstrip(")")
+        if len(location.split()) <= 5:  # Simple check that it's not too complex
+            return location
+            
+    return None
 
 
 def parse_name(first_name: str, last_name: str, title: str) -> Dict[str, Optional[str]]:

@@ -317,6 +317,8 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             "Title", 
                             "First Name", 
                             "Last Name", 
+                            "Company",
+                            "Location",
                             "Description", 
                             "Profile Image URL",
                             "Connection Msg",
@@ -336,19 +338,48 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             "Last Msg UTC"
                         ]
                         
-                        # Update headers (A-S = 19 columns)
-                        worksheet.update("A1:S1", [headers])
+                        # Update headers (A-V = 21 columns)
+                        worksheet.update("A1:V1", [headers])
                         
                         # Format headers
-                        worksheet.format("A1:S1", {
+                        worksheet.format("A1:V1", {
                             "textFormat": {"bold": True},
                             "horizontalAlignment": "CENTER",
                             "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
                         })
                         
+                        # Set default values for status columns for all existing rows
+                        if len(all_values) > 1:
+                            # Create default values for Contact Status and Connection State
+                            contact_status_updates = []
+                            connection_state_updates = []
+                            
+                            for row_num in range(2, len(all_values) + 1):  # Start from row 2 (skip header)
+                                contact_status_updates.append({
+                                    "range": f"M{row_num}",
+                                    "values": [["Not contacted"]]
+                                })
+                                connection_state_updates.append({
+                                    "range": f"Q{row_num}",
+                                    "values": [["NOT_CONNECTED"]]
+                                })
+                            
+                            # Apply updates in batches to avoid API limits
+                            if contact_status_updates:
+                                for i in range(0, len(contact_status_updates), 20):
+                                    batch = contact_status_updates[i:i+20]
+                                    worksheet.batch_update(batch)
+                            
+                            if connection_state_updates:
+                                for i in range(0, len(connection_state_updates), 20):
+                                    batch = connection_state_updates[i:i+20]
+                                    worksheet.batch_update(batch)
+                            
+                            logger.info(f"Set default status values for {len(all_values)-1} rows")
+                        
                         # Auto-resize columns
                         try:
-                            worksheet.columns_auto_resize(0, 18)  # Resize columns A-S (0-18)
+                            worksheet.columns_auto_resize(0, 20)  # Resize columns A-V (0-20)
                         except Exception as resize_error:
                             logger.warning(f"Failed to auto-resize columns: {str(resize_error)}")
                     
@@ -371,6 +402,8 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "Title", 
                     "First Name", 
                     "Last Name", 
+                    "Company",
+                    "Location",
                     "Description", 
                     "Profile Image URL",
                     "Connection Msg",
@@ -392,7 +425,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 worksheet.append_row(headers, value_input_option='RAW')
                 
                 # Format headers (make bold, freeze row, center alignment)
-                worksheet.format("A1:S1", {
+                worksheet.format("A1:V1", {
                     "textFormat": {"bold": True},
                     "horizontalAlignment": "CENTER",
                     "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -401,7 +434,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 
                 # Auto-resize columns to fit content - this replaces set_column_width
                 try:
-                    worksheet.columns_auto_resize(0, 18)  # Resize columns A-S (0-18)
+                    worksheet.columns_auto_resize(0, 21)  # Resize columns A-V (includes new columns)
                 except Exception as e:
                     logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -451,24 +484,38 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
         title = profile.title or ""
         if len(title) > 100:
             title = title[:97] + "..."
+            
+        # Get company and location if available
+        company = profile.company if hasattr(profile, 'company') else ""
+        location = profile.location if hasattr(profile, 'location') else ""
+        
+        # Set default values for connection_state and contact_status if not provided
+        connection_state = profile.connection_state if hasattr(profile, 'connection_state') and profile.connection_state else "NOT_CONNECTED"
+        contact_status = profile.contact_status if hasattr(profile, 'contact_status') and profile.contact_status else "Not contacted"
         
         rows.append([
             linkedin_url,
             title,
             profile.first_name or "",
             profile.last_name or "",
+            company,           # Add company
+            location,          # Add location
             description,
             profile_image_url,
-            "",  # Connection Msg
-            "",  # Comment Msg
-            "",  # F/U-1
-            "",  # F/U-2
-            "",  # F/U-3
-            "",  # InMail
-            "",  # Contact Status
+            profile.connection_msg if hasattr(profile, 'connection_msg') else "",  # Connection Msg
+            profile.comment_msg if hasattr(profile, 'comment_msg') else "",  # Comment Msg
+            profile.followup1 if hasattr(profile, 'followup1') else "",  # F/U-1
+            profile.followup2 if hasattr(profile, 'followup2') else "",  # F/U-2
+            profile.followup3 if hasattr(profile, 'followup3') else "",  # F/U-3
+            profile.inmail if hasattr(profile, 'inmail') else "",  # InMail
+            contact_status,  # Contact Status
             "",  # Last Action UTC
             "",  # Error Msg
-            str(profile.followers_count) if profile.followers_count else ""  # Followers Count
+            "",  # Invite ID
+            connection_state,  # Connection State
+            str(profile.followers_count) if profile.followers_count else "",  # Followers Count
+            "0",  # Unread Count (default to 0)
+            ""   # Last Msg UTC
         ])
     
     # Retry logic for append operations (in case of API rate limits)
@@ -507,7 +554,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             
             # Auto-resize columns after adding data
             try:
-                worksheet.columns_auto_resize(0, 15)  # Resize columns A-P (includes new column)
+                worksheet.columns_auto_resize(0, 21)  # Resize columns A-V (includes new columns)
             except Exception as e:
                 logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
