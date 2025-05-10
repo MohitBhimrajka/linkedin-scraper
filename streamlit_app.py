@@ -16,7 +16,7 @@ import traceback
 from src.runner import process_query, load_queries
 from src.throttle import Batcher
 from src.transform import normalize_results, Profile
-from src.sheets import append_rows, append_icp_results, get_spreadsheet, get_google_sheets_client, generate_sheet_name
+from src.sheets import append_rows, append_icp_results, get_spreadsheet, get_google_sheets_client, generate_sheet_name, create_or_get_master_profiles_sheet
 from src.logging_conf import logger
 from src.campaign import run_campaign
 from src.sync import sync_status
@@ -960,6 +960,158 @@ def main():
                     df = pd.DataFrame(data)
                     
                     if not df.empty:
+                        # Get Master_Profiles sheet to check for Do Not Contact and current connection state
+                        try:
+                            master_profiles_sheet = create_or_get_master_profiles_sheet(spreadsheet)
+                            master_profiles_data = master_profiles_sheet.get_all_records()
+                            
+                            # Create a lookup map using LinkedIn URL as key
+                            master_profiles_map = {row.get('LinkedIn URL', ''): row for row in master_profiles_data if row.get('LinkedIn URL')}
+                            
+                            # Default values for profiles not in master sheet
+                            default_master_profile = {
+                                'Last System Action': 'Not contacted',
+                                'Unipile Connection State': 'NOT_CONNECTED',
+                                'Do Not Contact': 'FALSE'
+                            }
+                            
+                            # Fetch Unipile data to get the most up-to-date connection states
+                            with st.spinner("Fetching latest connection states from Unipile..."):
+                                try:
+                                    if "UNIPILE_API_KEY" in os.environ and "UNIPILE_DSN" in os.environ and "UNIPILE_ACCOUNT_ID" in os.environ:
+                                        # Import the client and create it
+                                        from src.unipile_client import UnipileClient
+                                        client = UnipileClient()
+                                        
+                                        # Get async event loop
+                                        try:
+                                            loop = asyncio.get_event_loop()
+                                        except RuntimeError:
+                                            # If no event loop exists, create one
+                                            loop = asyncio.new_event_loop()
+                                            asyncio.set_event_loop(loop)
+                                        
+                                        # Fetch relations (connection states) from Unipile
+                                        try:
+                                            unipile_relations = loop.run_until_complete(client.list_relations())
+                                            unipile_relations_map = {
+                                                r.get("provider_id", ""): r.get("state", "NOT_CONNECTED") 
+                                                for r in unipile_relations if r.get("provider_id")
+                                            }
+                                            
+                                            # Fetch sent invitations
+                                            unipile_invites = loop.run_until_complete(client.list_sent_invitations())
+                                            unipile_invites_map = {
+                                                i.get("provider_id", ""): True 
+                                                for i in unipile_invites if i.get("provider_id")
+                                            }
+                                            
+                                            # Close the client
+                                            loop.run_until_complete(client.close())
+                                            
+                                            st.success(f"✅ Retrieved {len(unipile_relations)} connections and {len(unipile_invites)} sent invitations from Unipile.")
+                                        except Exception as e:
+                                            st.warning(f"❗ Could not fetch Unipile connection data. Using cached data from Master_Profiles sheet. Error: {str(e)}")
+                                            unipile_relations_map = {}
+                                            unipile_invites_map = {}
+                                    else:
+                                        st.warning("❗ Unipile credentials not found in environment variables. Using cached data from Master_Profiles sheet.")
+                                        unipile_relations_map = {}
+                                        unipile_invites_map = {}
+                                except Exception as e:
+                                    st.error(f"Error initializing Unipile client: {str(e)}")
+                                    unipile_relations_map = {}
+                                    unipile_invites_map = {}
+                            
+                            # Enrich the dataframe with master profiles data
+                            enriched_rows = []
+                            filtered_out_count = 0
+                            do_not_contact_count = 0
+                            already_connected_count = 0
+                            pending_count = 0
+                            
+                            for _, row in df.iterrows():
+                                linkedin_url = row.get('LinkedIn URL', '')
+                                provider_id = row.get('Provider ID', '')
+                                
+                                if not linkedin_url:
+                                    continue
+                                
+                                # Get master profile data if it exists
+                                master_data = master_profiles_map.get(linkedin_url, default_master_profile)
+                                
+                                # Check if marked as Do Not Contact
+                                if master_data.get('Do Not Contact', 'FALSE').upper() == 'TRUE':
+                                    do_not_contact_count += 1
+                                    filtered_out_count += 1
+                                    continue
+                                
+                                # Check Unipile connection state (first from unipile_relations_map, then fall back to Master_Profiles)
+                                # Extract profile identifier to try to match with Unipile provider_id
+                                ident = linkedin_url.rstrip('/').split('/')[-1]
+                                
+                                # Look for this profile in unipile data
+                                current_state = None
+                                if provider_id:
+                                    current_state = unipile_relations_map.get(provider_id)
+                                
+                                if not current_state:
+                                    # Try to match by extracted identifier
+                                    for pid, state in unipile_relations_map.items():
+                                        if ident in pid:
+                                            current_state = state
+                                            # Since we found a match, update the row with the provider_id
+                                            row['Provider ID'] = pid
+                                            break
+                                
+                                # Check if this profile has a pending invitation
+                                has_pending_invite = False
+                                if provider_id:
+                                    has_pending_invite = provider_id in unipile_invites_map
+                                    
+                                if not has_pending_invite and not current_state:
+                                    # Try to match in invites by identifier
+                                    for pid in unipile_invites_map:
+                                        if ident in pid:
+                                            has_pending_invite = True
+                                            # Update provider_id
+                                            row['Provider ID'] = pid
+                                            break
+                                
+                                # If still no current state from Unipile, use Master_Profiles
+                                if not current_state:
+                                    current_state = master_data.get('Unipile Connection State', 'NOT_CONNECTED')
+                                
+                                # Update row with most current data
+                                row['Connection State'] = current_state
+                                
+                                # If has pending invite but not yet reflected in connection state
+                                if has_pending_invite and current_state == 'NOT_CONNECTED':
+                                    row['Connection State'] = 'PENDING'
+                                
+                                # If already connected or pending, increment counters
+                                if current_state == 'CONNECTED':
+                                    already_connected_count += 1
+                                elif current_state == 'PENDING' or has_pending_invite:
+                                    pending_count += 1
+                                
+                                # Update the Contact Status from master if available
+                                if 'Last System Action' in master_data:
+                                    row['Contact Status'] = master_data.get('Last System Action')
+                                
+                                # Add the row to our filtered list
+                                enriched_rows.append(row)
+                            
+                            # Create a new DataFrame with our enriched data
+                            df = pd.DataFrame(enriched_rows)
+                            
+                            # Display filtering stats
+                            if filtered_out_count > 0:
+                                st.info(f"ℹ️ {filtered_out_count} profiles were filtered out: {do_not_contact_count} marked 'Do Not Contact', {already_connected_count} already connected, {pending_count} with pending invitations.")
+                            
+                        except Exception as e:
+                            st.warning(f"Could not access Master_Profiles sheet: {str(e)}. Using sheet data only.")
+                        
                         # Set default values for missing status fields
                         if "Contact Status" not in df.columns or df["Contact Status"].isna().all():
                             df["Contact Status"] = "Not contacted"
@@ -1322,138 +1474,335 @@ def main():
         if not sheet_titles:
             st.warning("No sheets available. Generate leads first in the Generate tab.")
         else:
-            # Initialize session state variables for sync tab if they don't exist
-            if 'data_potentially_changed' not in st.session_state:
-                st.session_state.data_potentially_changed = False
-            if 'last_synced_sheet' not in st.session_state:
-                st.session_state.last_synced_sheet = None
-                
-            # Sheet selection
-            selected_sheet = st.selectbox("Select sheet to monitor", sheet_titles)
+            # Add tabs in the Sync section for different functions
+            monitor_tab, master_profiles_tab = st.tabs(["Monitor Relationships", "Master Profiles"])
             
-            if selected_sheet:
-                try:
-                    # Auto-sync if data changed for the current sheet
-                    if st.session_state.data_potentially_changed and st.session_state.last_synced_sheet == selected_sheet:
-                        with st.spinner("Automatically syncing after recent campaign..."):
-                            logger.info(f"Auto-syncing sheet '{selected_sheet}' due to recent campaign activity.")
-                            sync_results = asyncio.run(sync_status(sheet_id, selected_sheet))
-                            st.success(f"Auto-sync completed! Updated {sync_results['updated']} records")
-                            # Reset the flag
-                            st.session_state.data_potentially_changed = False
-                            st.session_state.last_synced_sheet = None
+            with monitor_tab:
+                # Initialize session state variables for sync tab if they don't exist
+                if 'data_potentially_changed' not in st.session_state:
+                    st.session_state.data_potentially_changed = False
+                if 'last_synced_sheet' not in st.session_state:
+                    st.session_state.last_synced_sheet = None
                     
-                    # Load profiles from selected sheet
-                    ws = spreadsheet.worksheet(selected_sheet)
-                    data = ws.get_all_records()
-                    
-                    # Create DataFrame
-                    df = pd.DataFrame(data)
-                    
-                    if not df.empty:
-                        # Show metrics at the top
-                        stats = get_relationship_stats(df)
-                        
-                        # Create metrics row
-                        metric_cols = st.columns(5)
-                        with metric_cols[0]:
-                            st.metric("Total Profiles", stats["total"])
-                        with metric_cols[1]:
-                            st.metric("Invites Sent", stats["sent"])
-                        with metric_cols[2]:
-                            st.metric("Connected", stats["connected"])
-                        with metric_cols[3]:
-                            st.metric("Comments", stats["comments"])
-                        with metric_cols[4]:
-                            st.metric("Unread Messages", stats["unread"])
-                        
-                        # Sync button
-                        if st.button("🔄 Sync Now", type="primary"):
-                            with st.spinner("Syncing status data from Unipile..."):
+                # Sheet selection
+                selected_sheet = st.selectbox("Select sheet to monitor", sheet_titles)
+                
+                if selected_sheet:
+                    try:
+                        # Auto-sync if data changed for the current sheet
+                        if st.session_state.data_potentially_changed and st.session_state.last_synced_sheet == selected_sheet:
+                            with st.spinner("Automatically syncing after recent campaign..."):
+                                logger.info(f"Auto-syncing sheet '{selected_sheet}' due to recent campaign activity.")
                                 sync_results = asyncio.run(sync_status(sheet_id, selected_sheet))
-                                st.success(f"Sync completed! Processed: {sync_results['processed']}, Updated: {sync_results['updated']}, Errors: {sync_results['errors']}")
-                                
-                                # Reload data
-                                data = ws.get_all_records()
-                                df = pd.DataFrame(data)
-                                
-                                # Update metrics
-                                stats = get_relationship_stats(df)
-                                st.rerun()
+                                st.success(f"Auto-sync completed! Updated {sync_results['updated']} records")
+                                # Reset the flag
+                                st.session_state.data_potentially_changed = False
+                                st.session_state.last_synced_sheet = None
                         
-                        # Add filters
-                        st.subheader("Filter Profiles")
+                        # Load profiles from selected sheet
+                        ws = spreadsheet.worksheet(selected_sheet)
+                        data = ws.get_all_records()
+                        
+                        # Create DataFrame
+                        df = pd.DataFrame(data)
+                        
+                        if not df.empty:
+                            # Show metrics at the top
+                            stats = get_relationship_stats(df)
+                            
+                            # Create metrics row
+                            metric_cols = st.columns(5)
+                            with metric_cols[0]:
+                                st.metric("Total Profiles", stats["total"])
+                            with metric_cols[1]:
+                                st.metric("Invites Sent", stats["sent"])
+                            with metric_cols[2]:
+                                st.metric("Connected", stats["connected"])
+                            with metric_cols[3]:
+                                st.metric("Comments", stats["comments"])
+                            with metric_cols[4]:
+                                st.metric("Unread Messages", stats["unread"])
+                            
+                            # Sync button
+                            if st.button("🔄 Sync Now", type="primary"):
+                                with st.spinner("Syncing status data from Unipile..."):
+                                    sync_results = asyncio.run(sync_status(sheet_id, selected_sheet))
+                                    st.success(f"Sync completed! Processed: {sync_results['processed']}, Updated: {sync_results['updated']}, Errors: {sync_results['errors']}")
+                                    
+                                    # Reload data
+                                    data = ws.get_all_records()
+                                    df = pd.DataFrame(data)
+                                    
+                                    # Update metrics
+                                    stats = get_relationship_stats(df)
+                                    st.rerun()
+                        
+                            # Add filters
+                            st.subheader("Filter Profiles")
+                            filter_cols = st.columns(3)
+                            
+                            with filter_cols[0]:
+                                connection_filter = st.multiselect(
+                                    "Connection State",
+                                    options=["", "NOT_CONNECTED", "INVITED", "PENDING", "CONNECTED"],
+                                    default=[],
+                                    help="Filter by connection status"
+                                )
+                            
+                            with filter_cols[1]:
+                                unread_filter = st.checkbox("Show only unread messages", value=False,
+                                                        help="Show only profiles with unread messages")
+                                
+                            with filter_cols[2]:
+                                sort_by = st.selectbox(
+                                    "Sort by",
+                                    options=["Last Action UTC", "Connection State", "First Name"],
+                                    index=0,
+                                    help="Sort profiles by this field"
+                                )
+                            
+                            # Apply filters
+                            filtered_df = df.copy()
+                            
+                            if connection_filter:
+                                filtered_df = filtered_df[filtered_df["Connection State"].isin(connection_filter)]
+                                
+                            if unread_filter:
+                                try:
+                                    filtered_df = filtered_df[filtered_df["Unread Cnt"] > 0]
+                                except (KeyError, TypeError):
+                                    st.warning("Unread count column not found or invalid. Sync first to get this data.")
+                            
+                            # Apply sorting
+                            if sort_by in filtered_df.columns:
+                                try:
+                                    # For dates, handle potential formatting issues
+                                    if sort_by == "Last Action UTC":
+                                        filtered_df = filtered_df.sort_values(by=sort_by, ascending=False, na_position='last')
+                                    else:
+                                        filtered_df = filtered_df.sort_values(by=sort_by)
+                                except Exception as e:
+                                    st.warning(f"Could not sort by {sort_by}: {str(e)}")
+                            
+                            # Display filtered data
+                            st.subheader(f"Profile Status ({len(filtered_df)} profiles)")
+                            
+                            # Select columns to show
+                            display_cols = ["First Name", "Last Name", "Title", "Connection State", "Contact Status"]
+                            # Add additional columns if they exist
+                            if "Last Action UTC" in filtered_df.columns:
+                                display_cols.append("Last Action UTC")
+                            if "Unread Cnt" in filtered_df.columns:
+                                display_cols.append("Unread Cnt")
+                            if "Last Msg UTC" in filtered_df.columns:
+                                display_cols.append("Last Msg UTC")
+                            
+                            # Ensure all selected columns exist
+                            display_cols = [col for col in display_cols if col in filtered_df.columns]
+                            
+                            # Display the data
+                            st.dataframe(filtered_df[display_cols], use_container_width=True)
+                            
+                            # Export option
+                            if st.button("Export to CSV"):
+                                csv = filtered_df.to_csv(index=False)
+                                st.download_button(
+                                    label="Download CSV",
+                                    data=csv,
+                                    file_name=f"linkedin_profiles_{selected_sheet}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                    mime="text/csv",
+                                )
+                        else:
+                            st.warning("No profiles found in the selected sheet.")
+                    except Exception as e:
+                        st.error(f"Error loading sheet: {str(e)}")
+            
+            with master_profiles_tab:
+                st.subheader("Master Profiles Management")
+                
+                try:
+                    # Get the Master_Profiles sheet
+                    master_sheet = create_or_get_master_profiles_sheet(spreadsheet)
+                    master_data = master_sheet.get_all_records()
+                    
+                    if not master_data:
+                        st.warning("No profiles found in Master_Profiles sheet.")
+                    else:
+                        # Create a DataFrame
+                        master_df = pd.DataFrame(master_data)
+                        
+                        # Show some metrics
+                        stat_cols = st.columns(4)
+                        with stat_cols[0]:
+                            st.metric("Total Unique Profiles", len(master_df))
+                        with stat_cols[1]:
+                            do_not_contact_count = sum(1 for dnc in master_df.get("Do Not Contact", []) if str(dnc).upper() == "TRUE")
+                            st.metric("Do Not Contact", do_not_contact_count)
+                        with stat_cols[2]:
+                            connected_count = sum(1 for state in master_df.get("Unipile Connection State", []) if state == "CONNECTED")
+                            st.metric("Connected", connected_count)
+                        with stat_cols[3]:
+                            pending_count = sum(1 for state in master_df.get("Unipile Connection State", []) if state in ["PENDING", "INVITED"])
+                            st.metric("Pending", pending_count)
+                        
+                        # Add filters for the Master Profiles view
+                        st.subheader("Filter Master Profiles")
                         filter_cols = st.columns(3)
                         
                         with filter_cols[0]:
-                            connection_filter = st.multiselect(
+                            dnc_filter = st.radio(
+                                "Do Not Contact",
+                                options=["All", "Only Do Not Contact", "Exclude Do Not Contact"],
+                                index=0,
+                                help="Filter by Do Not Contact status"
+                            )
+                        
+                        with filter_cols[1]:
+                            connection_state_filter = st.multiselect(
                                 "Connection State",
                                 options=["", "NOT_CONNECTED", "INVITED", "PENDING", "CONNECTED"],
                                 default=[],
                                 help="Filter by connection status"
                             )
-                        
-                        with filter_cols[1]:
-                            unread_filter = st.checkbox("Show only unread messages", value=False,
-                                                        help="Show only profiles with unread messages")
-                        
+                            
                         with filter_cols[2]:
-                            sort_by = st.selectbox(
-                                "Sort by",
-                                options=["Last Msg UTC", "Connection State", "Unread Cnt"],
-                                index=0,
-                                help="Sort profiles by field"
+                            source_icp_filter = st.text_input(
+                                "Source ICP (contains)",
+                                value="",
+                                help="Filter by ICP name (partial match)"
                             )
                         
                         # Apply filters
-                        filtered_df = df
+                        filtered_master_df = master_df.copy()
                         
-                        if connection_filter:
-                            filtered_df = filtered_df[filtered_df["Connection State"].isin(connection_filter) | 
-                                                     (filtered_df["Connection State"].isnull() & ("" in connection_filter))]
+                        # Apply Do Not Contact filter
+                        if dnc_filter == "Only Do Not Contact":
+                            filtered_master_df = filtered_master_df[filtered_master_df["Do Not Contact"].str.upper() == "TRUE"]
+                        elif dnc_filter == "Exclude Do Not Contact":
+                            filtered_master_df = filtered_master_df[filtered_master_df["Do Not Contact"].str.upper() != "TRUE"]
+                            
+                        # Apply Connection State filter
+                        if connection_state_filter:
+                            filtered_master_df = filtered_master_df[filtered_master_df["Unipile Connection State"].isin(connection_state_filter)]
+                            
+                        # Apply Source ICP filter
+                        if source_icp_filter:
+                            filtered_master_df = filtered_master_df[filtered_master_df["Source ICPs"].str.contains(source_icp_filter, case=False, na=False)]
                         
-                        if unread_filter:
-                            filtered_df = filtered_df[filtered_df["Unread Cnt"] > 0]
+                        # Display the filtered data
+                        st.subheader(f"Master Profiles ({len(filtered_master_df)} profiles)")
                         
-                        # Apply sorting
-                        if sort_by and sort_by in filtered_df.columns:
-                            # For date fields, handle NaN values
-                            if sort_by == "Last Msg UTC":
-                                filtered_df = filtered_df.sort_values(by=sort_by, ascending=False, na_position='last')
-                            else:
-                                filtered_df = filtered_df.sort_values(by=sort_by, ascending=False)
-                        
-                        # Show the data editor with relationship data
-                        st.subheader(f"Profiles ({len(filtered_df)} matching)")
-                        
+                        # Define display columns
                         display_cols = [
-                            "LinkedIn URL", "First Name", "Last Name", "Title", 
-                            "Connection State", "Follower Cnt", "Unread Cnt", "Last Msg UTC",
-                            "Contact Status", "Last Action UTC"
+                            "LinkedIn URL", "First Name", "Last Name", "Title", "Company", 
+                            "Last System Action", "Unipile Connection State", "Source ICPs", "Do Not Contact"
                         ]
                         
-                        # Only show columns that exist
-                        display_cols = [col for col in display_cols if col in filtered_df.columns]
+                        # Ensure all display columns exist
+                        display_cols = [col for col in display_cols if col in filtered_master_df.columns]
                         
-                        st.dataframe(
-                            filtered_df[display_cols],
+                        # Display the data with the ability to edit Do Not Contact column
+                        edited_master_df = st.data_editor(
+                            filtered_master_df[display_cols],
+                            column_config={
+                                "LinkedIn URL": st.column_config.TextColumn("LinkedIn URL", disabled=True),
+                                "First Name": st.column_config.TextColumn("First Name", disabled=True),
+                                "Last Name": st.column_config.TextColumn("Last Name", disabled=True),
+                                "Title": st.column_config.TextColumn("Title", disabled=True),
+                                "Company": st.column_config.TextColumn("Company", disabled=True),
+                                "Last System Action": st.column_config.TextColumn("Last System Action", disabled=True),
+                                "Unipile Connection State": st.column_config.TextColumn("Unipile Connection State", disabled=True),
+                                "Source ICPs": st.column_config.TextColumn("Source ICPs", disabled=True),
+                                "Do Not Contact": st.column_config.CheckboxColumn("Do Not Contact", help="Mark profiles to never contact")
+                            },
+                            hide_index=True,
                             use_container_width=True,
-                            hide_index=True
+                            num_rows="dynamic"
                         )
                         
-                        # Export button
-                        if st.button("📊 Export Funnel CSV"):
-                            csv = filtered_df.to_csv(index=False)
-                            st.download_button(
-                                label="📥 Download Funnel CSV",
-                                data=csv,
-                                file_name=f"linkedin_funnel_{selected_sheet}.csv",
-                                mime="text/csv",
+                        # Save changes button
+                        if st.button("Save Changes to Do Not Contact List"):
+                            try:
+                                # Get the original full master data to compare
+                                changes_made = False
+                                
+                                # Find rows that have been changed
+                                for i, edited_row in edited_master_df.iterrows():
+                                    linkedin_url = edited_row["LinkedIn URL"]
+                                    new_dnc_value = "TRUE" if edited_row["Do Not Contact"] else "FALSE"
+                                    
+                                    # Find this URL in the original data
+                                    original_rows = master_df[master_df["LinkedIn URL"] == linkedin_url]
+                                    
+                                    if not original_rows.empty:
+                                        original_idx = original_rows.index[0]
+                                        original_dnc = master_df.loc[original_idx, "Do Not Contact"]
+                                        
+                                        # Check if value has changed
+                                        original_dnc_bool = original_dnc.upper() == "TRUE" if isinstance(original_dnc, str) else bool(original_dnc)
+                                        new_dnc_bool = new_dnc_value.upper() == "TRUE"
+                                        
+                                        if original_dnc_bool != new_dnc_bool:
+                                            # Find the row in the master sheet (2-based index for sheets)
+                                            cell = master_sheet.find(linkedin_url)
+                                            if cell:
+                                                row_idx = cell.row
+                                                # Update the Do Not Contact column (column O in Master_Profiles)
+                                                master_sheet.update_cell(row_idx, 15, new_dnc_value)
+                                                changes_made = True
+                                
+                                if changes_made:
+                                    st.success("✅ Do Not Contact list updated successfully!")
+                                else:
+                                    st.info("No changes detected to save.")
+                                    
+                            except Exception as e:
+                                st.error(f"Error saving changes: {str(e)}")
+                                
+                        # Bulk add to Do Not Contact
+                        with st.expander("Bulk Add to Do Not Contact"):
+                            st.info("Paste a list of LinkedIn URLs to mark as Do Not Contact")
+                            bulk_dnc_urls = st.text_area(
+                                "LinkedIn URLs (one per line)",
+                                height=150,
+                                help="Paste LinkedIn profile URLs, one per line"
                             )
-                    else:
-                        st.warning("No profiles found in the selected sheet.")
+                            
+                            if st.button("Add All to Do Not Contact"):
+                                if not bulk_dnc_urls.strip():
+                                    st.warning("No URLs provided.")
+                                else:
+                                    urls = [url.strip() for url in bulk_dnc_urls.split("\n") if url.strip()]
+                                    
+                                    updated_count = 0
+                                    not_found_urls = []
+                                    
+                                    for url in urls:
+                                        try:
+                                            # Find the URL in the master sheet
+                                            cell = master_sheet.find(url)
+                                            if cell:
+                                                row_idx = cell.row
+                                                # Update the Do Not Contact column (column O)
+                                                master_sheet.update_cell(row_idx, 15, "TRUE")
+                                                updated_count += 1
+                                            else:
+                                                not_found_urls.append(url)
+                                        except Exception as e:
+                                            st.error(f"Error updating {url}: {str(e)}")
+                                            
+                                    if updated_count > 0:
+                                        st.success(f"✅ Added {updated_count} URLs to Do Not Contact list")
+                                    
+                                    if not_found_urls:
+                                        st.warning(f"❗ {len(not_found_urls)} URLs were not found in the Master_Profiles sheet")
+                                        with st.expander(f"View {len(not_found_urls)} not found URLs"):
+                                            for url in not_found_urls:
+                                                st.text(url)
+                                                
                 except Exception as e:
-                    st.error(f"Error loading sheet: {str(e)}")
+                    st.error(f"Error accessing Master_Profiles sheet: {str(e)}")
+                    st.info("If this is your first time using the tool, run a campaign in the Generate tab to create the Master_Profiles sheet.")
 
 
 if __name__ == "__main__":

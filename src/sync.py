@@ -1,7 +1,7 @@
 import asyncio
 from typing import Optional
 from src.unipile_client import UnipileClient
-from src.sheets import get_spreadsheet
+from src.sheets import get_spreadsheet, create_or_get_master_profiles_sheet
 from src.logging_conf import logger
 
 
@@ -22,12 +22,19 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
         "updated": 0,
         "errors": 0,
         "not_found": 0,
-        "api_errors": 0
+        "api_errors": 0,
+        "master_profiles_updated": 0
     }
     
     try:
+        # Get the spreadsheet
+        spreadsheet = get_spreadsheet(sheet_id)
+        
         # Get the worksheet
-        ws = get_spreadsheet(sheet_id).worksheet(sheet_name)
+        ws = spreadsheet.worksheet(sheet_name)
+        
+        # Get the Master_Profiles sheet
+        master_sheet = create_or_get_master_profiles_sheet(spreadsheet)
         
         # Get all data as records
         rows = ws.get_all_records()
@@ -70,7 +77,88 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
             stats["api_errors"] += 1
             # Continue with empty conversations
         
-        # Process each row
+        # First, process the Master_Profiles sheet to update all profiles with the latest Unipile data
+        try:
+            master_profiles = master_sheet.get_all_records()
+            
+            for i, profile in enumerate(master_profiles):
+                master_row = i + 2  # +1 for 0-index to 1-index, +1 for header row
+                
+                # Get LinkedIn URL and Provider ID
+                linkedin_url = profile.get("LinkedIn URL", "")
+                provider_id = profile.get("Provider ID", "")
+                
+                # Skip if no identifiers
+                if not linkedin_url and not provider_id:
+                    continue
+                
+                # Try to match by provider_id first, then by extracting ID from LinkedIn URL
+                matched_provider_id = None
+                if provider_id:
+                    # Direct match by provider_id
+                    matched_provider_id = provider_id
+                elif linkedin_url:
+                    # Extract identifier from URL
+                    ident = linkedin_url.rstrip('/').split('/')[-1]
+                    
+                    # Check if this URL's identifier matches any provider_id we have
+                    for pid in invites.keys():
+                        if ident in pid:
+                            matched_provider_id = pid
+                            break
+                    
+                    # If still not found, check in relations data
+                    if not matched_provider_id:
+                        for pid in relations.keys():
+                            if ident in pid:
+                                matched_provider_id = pid
+                                break
+                
+                # If we found a match, update the profile
+                if matched_provider_id:
+                    # Get data for this profile
+                    invite_data = invites.get(matched_provider_id, {})
+                    relation_data = relations.get(matched_provider_id, {})
+                    conversation_data = conversations.get(matched_provider_id, {})
+                    
+                    # Prepare updates
+                    updates = {}
+                    
+                    # Update Provider ID if missing
+                    if not provider_id and matched_provider_id:
+                        updates["B"] = matched_provider_id
+                    
+                    # Add Connection State (column L)
+                    connection_state = relation_data.get("state", "NOT_CONNECTED")
+                    if connection_state:
+                        updates["L"] = connection_state
+                    
+                    # Add Unipile Last Interaction UTC (column M)
+                    last_message_at = conversation_data.get("last_message_at", "")
+                    if last_message_at:
+                        updates["M"] = last_message_at
+                    
+                    # Apply updates if we have any
+                    if updates:
+                        # Prepare batch updates
+                        batch_updates = []
+                        for col, value in updates.items():
+                            batch_updates.append({
+                                "range": f"{col}{master_row}", 
+                                "values": [[value]]
+                            })
+                        
+                        # Apply batch update
+                        if batch_updates:
+                            master_sheet.batch_update(batch_updates)
+                            stats["master_profiles_updated"] += 1
+            
+            logger.info(f"Updated {stats['master_profiles_updated']} profiles in Master_Profiles sheet")
+        except Exception as e:
+            logger.error(f"Error updating Master_Profiles sheet: {str(e)}")
+            # Continue with the original sync function
+        
+        # Process each row in the original sheet
         row_indices = specific_rows if specific_rows else range(len(rows))
         for idx in row_indices:
             sheet_row = idx + 2  # +1 for 0-index to 1-index, +1 for header row

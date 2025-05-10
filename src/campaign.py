@@ -10,6 +10,7 @@ import concurrent.futures
 from functools import partial
 import os
 import traceback
+from src.sheets import update_master_profile_action
 
 class CampaignStats: 
     generated=0
@@ -52,6 +53,7 @@ async def run_campaign(
     # Connect to Google Sheets API if IDs are provided
     worksheet = None
     gc = None
+    spreadsheet = None
     if spreadsheet_id and sheet_name:
         try:
             # Try multiple possible locations for service account file
@@ -76,8 +78,8 @@ async def run_campaign(
                 logger.info("Connected to Google Sheets using OAuth")
             
             # Open the spreadsheet and specific worksheet
-            spread = gc.open_by_key(spreadsheet_id)
-            worksheet = spread.worksheet(sheet_name)
+            spreadsheet = gc.open_by_key(spreadsheet_id)
+            worksheet = spreadsheet.worksheet(sheet_name)
             logger.info(f"Connected to Google Sheet '{sheet_name}'")
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {e}")
@@ -129,6 +131,15 @@ async def run_campaign(
                             p.inmail = ""
                             
                         stats.generated += 1
+                        
+                        # Update Master_Profiles with message generation action
+                        if spreadsheet:
+                            update_master_profile_action(
+                                spreadsheet, 
+                                p.linkedin_url, 
+                                "Messages generated",
+                                None  # Don't have provider_id yet
+                            )
                     else:
                         # Use existing messages from the profile (ensure all fields are covered)
                         msgs = {
@@ -230,115 +241,150 @@ async def run_campaign(
                         recent = ""
                         posts_data = []
                     
-                    # 5. Send invitation with connection message
-                    try:
-                        logger.info(f"Sending invitation to {provider_id}" + (f" scheduled for {schedule_time}" if schedule_time else ""))
-                        await client.send_invitation(
-                            provider_id=provider_id, 
-                            message=msgs["connection"],
-                            send_at=schedule_time
-                        )
-                        
-                        # Update stats and sheet
-                        stats.sent += 1
-                        if worksheet and row_idx:
-                            now = dt.datetime.now(dt.UTC).isoformat()
-                            status_updates = [
-                                {"range": f"O{row_idx}", "values": [["Invited"]]},  # Column O for Contact Status
-                                {"range": f"P{row_idx}", "values": [[now]]},        # Column P for Last Action UTC
-                            ]
-                            await asyncio.to_thread(worksheet.batch_update, status_updates)
-                    except Exception as e:
-                        # If sending fails but message generation succeeded
-                        logger.error(f"Failed to send invitation to {provider_id}: {e}")
-                        if worksheet and row_idx:
-                            now = dt.datetime.now(dt.UTC).isoformat()
-                            error_updates = [
-                                {"range": f"O{row_idx}", "values": [["Error"]]},
-                                {"range": f"P{row_idx}", "values": [[now]]},
-                                {"range": f"Q{row_idx}", "values": [[f"Invite: {str(e)[:100]}"]]}  # Column Q for Error Msg
-                            ]
-                            await asyncio.to_thread(worksheet.batch_update, error_updates)
-                        stats.errors += 1
-                    
-                    # 6. Comment on Recent Post (if mode involves commenting and post exists)
-                    if mode in ["Invite + Comment", "Full (invite, comment, follow-ups)"]:
-                        if p.comment_msg and posts_data:  # posts_data is the list from client.recent_posts
-                            try:
-                                # Attempt to comment on the first post if it has an ID
-                                if posts_data and len(posts_data) > 0 and "id" in posts_data[0]:
-                                    post_to_comment_id = posts_data[0]["id"]
-                                    logger.info(f"Commenting on post {post_to_comment_id} for {provider_id}" + (f" scheduled for {schedule_time}" if schedule_time else ""))
-                                    await client.comment_post(
-                                        post_id=post_to_comment_id,
-                                        message=p.comment_msg,
-                                        send_at=schedule_time 
-                                    )
-                                    logger.info(f"Successfully commented on post for {provider_id}")
-                                    
-                                    # Update sheet status to reflect the comment
-                                    if worksheet and row_idx:
-                                        # Get current status to potentially combine with "Invited"
-                                        current_contact_status_cell = await asyncio.to_thread(worksheet.cell, row_idx, 15)  # Column O for Contact Status
-                                        current_contact_status = current_contact_status_cell.value
-                                        new_status = "Commented"
-                                        if current_contact_status and "Invited" in current_contact_status:
-                                            new_status = "Invited & Commented"
+                    # 5. Before sending invitation, check current connection state from Unipile
+                    if mode in ["Invite only", "Invite + Comment", "Full (invite, comment, follow-ups)"]:
+                        try:
+                            relations = await client.list_relations()
+                            # Find if this provider_id already has a relation
+                            for relation in relations:
+                                if relation.get("provider_id") == provider_id:
+                                    current_state = relation.get("state", "NOT_CONNECTED")
+                                    # If already connected or pending, skip sending invite
+                                    if current_state in ["CONNECTED", "PENDING"]:
+                                        logger.info(f"Skipping invitation for {provider_id}: Already in state {current_state}")
+                                        # Update the sheet status
+                                        if worksheet and row_idx:
+                                            now = dt.datetime.now(dt.UTC).isoformat()
+                                            status_updates = [
+                                                {"range": f"O{row_idx}", "values": [[f"Already {current_state}"]]},
+                                                {"range": f"P{row_idx}", "values": [[now]]},
+                                            ]
+                                            await asyncio.to_thread(worksheet.batch_update, status_updates)
                                         
-                                        now = dt.datetime.now(dt.UTC).isoformat()
-                                        comment_status_updates = [
-                                            {"range": f"O{row_idx}", "values": [[new_status]]},
-                                            {"range": f"P{row_idx}", "values": [[now]]},  # Update last action time
-                                        ]
-                                        await asyncio.to_thread(worksheet.batch_update, comment_status_updates)
-                                else:
-                                    logger.warning(f"No valid post ID found to comment for {provider_id}, though posts_data was present.")
-                            except Exception as e:
-                                logger.error(f"Failed to comment on post for {provider_id}: {e}")
+                                        # Update Master_Profiles
+                                        if spreadsheet:
+                                            update_master_profile_action(
+                                                spreadsheet, 
+                                                p.linkedin_url, 
+                                                f"Already {current_state}",
+                                                provider_id
+                                            )
+                                        
+                                        stats.skipped += 1
+                                        return
+                        except Exception as e:
+                            # If we can't check relations, log and continue
+                            logger.warning(f"Failed to check relations for {provider_id}: {e}")
+                    
+                    # 6. Send invitation with connection message
+                    if mode in ["Invite only", "Invite + Comment", "Full (invite, comment, follow-ups)"]:
+                        try:
+                            logger.info(f"Sending invitation to {provider_id}" + (f" scheduled for {schedule_time}" if schedule_time else ""))
+                            await client.send_invitation(
+                                provider_id=provider_id, 
+                                message=msgs["connection"],
+                                send_at=schedule_time
+                            )
+                            
+                            # Update stats and sheet
+                            stats.sent += 1
+                            if worksheet and row_idx:
+                                now = dt.datetime.now(dt.UTC).isoformat()
+                                status_updates = [
+                                    {"range": f"O{row_idx}", "values": [["Invited"]]},  # Column O for Contact Status
+                                    {"range": f"P{row_idx}", "values": [[now]]},        # Column P for Last Action UTC
+                                ]
+                                await asyncio.to_thread(worksheet.batch_update, status_updates)
+                            
+                            # Update Master_Profiles
+                            if spreadsheet:
+                                update_master_profile_action(
+                                    spreadsheet, 
+                                    p.linkedin_url, 
+                                    "Invited",
+                                    provider_id
+                                )
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to send invitation to {provider_id}: {str(e)}")
+                            stats.errors += 1
+                            if worksheet and row_idx:
+                                await asyncio.to_thread(
+                                    worksheet.update_cell, 
+                                    row_idx, 
+                                    15,  # Column O (15th column) for Contact Status
+                                    f"Error: {str(e)[:100]}"
+                                )
+                    
+                    # 7. If we have recent posts and the mode includes commenting
+                    if recent and recent.strip() and posts_data and mode in ["Invite + Comment", "Full (invite, comment, follow-ups)"]:
+                        try:
+                            post_id = posts_data[0].get("id")
+                            if post_id:
+                                logger.info(f"Commenting on recent post for {provider_id}")
+                                await client.comment_post(
+                                    post_id=post_id,
+                                    message=msgs["comment"],
+                                    send_at=schedule_time
+                                )
+                                
+                                # Update sheet
                                 if worksheet and row_idx:
-                                    now = dt.datetime.now(dt.UTC).isoformat()
-                                    error_updates = [
-                                        {"range": f"P{row_idx}", "values": [[now]]},  # Update last action time
-                                        {"range": f"Q{row_idx}", "values": [[f"Comment: {str(e)[:100]}"]]}  # Add error message
-                                    ]
-                                    await asyncio.to_thread(worksheet.batch_update, error_updates)
-                                stats.errors += 1
-                        elif not p.comment_msg:
-                            logger.info(f"No comment message generated for {provider_id}, skipping comment.")
-                        elif not posts_data:
-                            logger.info(f"No recent posts found for {provider_id}, skipping comment.")
+                                    await asyncio.to_thread(
+                                        worksheet.update_cell, 
+                                        row_idx, 
+                                        15,  # Column O (15th column) for Contact Status 
+                                        "Invited + Commented"
+                                    )
+                                
+                                # Update Master_Profiles
+                                if spreadsheet:
+                                    update_master_profile_action(
+                                        spreadsheet, 
+                                        p.linkedin_url, 
+                                        "Invited + Commented",
+                                        provider_id
+                                    )
+                        except Exception as e:
+                            logger.warning(f"Failed to comment on post for {provider_id}: {str(e)}")
+                            # Non-fatal error, don't increment error count
+                    
+                    # 8. If in message-only mode, send message directly
+                    if mode == "Message only" and provider_id:
+                        # TODO: Implement this once the Unipile API supports direct messaging
+                        pass
                 
                 except Exception as e:
+                    logger.error(f"Error processing profile {p.linkedin_url}: {str(e)}")
+                    logger.debug(traceback.format_exc())
                     stats.errors += 1
-                    # Get detailed error information
-                    error_details = traceback.format_exc()
-                    error_type = type(e).__name__
-                    error_message = str(e) if str(e).strip() else "Unknown error occurred during campaign processing"
-                    
-                    # Log detailed error
-                    logger.error(f"Campaign error for {p.linkedin_url}: {error_type}: {error_message}")
-                    if error_details:
-                        logger.debug(f"Error details for {p.linkedin_url}:\n{error_details}")
-                    
-                    # Try to update the worksheet with error information
                     if worksheet and row_idx:
                         try:
-                            now = dt.datetime.now(dt.UTC).isoformat()
-                            simple_error = f"{error_type}: {error_message[:100]}..." if len(error_message) > 100 else f"{error_type}: {error_message}"
-                            await asyncio.to_thread(worksheet.batch_update, [
-                                {"range": f"O{row_idx}", "values": [["Error"]]},  # Column O for Contact Status
-                                {"range": f"P{row_idx}", "values": [[now]]},      # Column P for Last Action UTC
-                                {"range": f"Q{row_idx}", "values": [[simple_error]]}  # Column Q for Error Msg
-                            ])
+                            await asyncio.to_thread(
+                                worksheet.update_cell, 
+                                row_idx, 
+                                15,  # Column O (15th column) for Contact Status
+                                f"Error: {str(e)[:100]}" 
+                            )
                         except Exception as update_error:
-                            logger.error(f"Failed to update error in sheet: {update_error}")
+                            # If we can't even update the error status, just log it
+                            logger.error(f"Failed to update error status: {str(update_error)}")
         
-        # Create and gather all profile processing tasks
-        tasks = [process_profile(p, i) for i, p in enumerate(profiles)]
-        await asyncio.gather(*tasks, return_exceptions=True)  # return_exceptions=True for better error handling
+        # Create a task for each profile
+        tasks = [process_profile(profile, i) for i, profile in enumerate(profiles)]
         
-        return stats
+        # Run all tasks concurrently with the semaphore limiting concurrency
+        await asyncio.gather(*tasks)
+        
+    except Exception as e:
+        logger.error(f"Campaign error: {str(e)}")
+        logger.debug(traceback.format_exc())
+        stats.errors += 1
     finally:
-        # Ensure client is closed properly
-        await client.close()
-        logger.info("Unipile client closed") 
+        # Clean up
+        try:
+            await client.close()
+        except:
+            pass
+    
+    return stats 

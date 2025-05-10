@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 import traceback
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from datetime import datetime, timezone
 
 
 def get_google_sheets_client():
@@ -846,8 +847,14 @@ def append_icp_results(icp_results: List[Dict]):
             from src.transform import normalize_results
             icp_profiles = normalize_results(icp_data.get("results", []))
             
-            # Append profiles to the worksheet
-            append_rows_to_worksheet(worksheet, icp_profiles)
+            # First, update the Master_Profiles sheet and get enriched profiles
+            enriched_profiles = update_master_profiles(spreadsheet, icp_profiles, sheet_name)
+            
+            # Filter out any profiles marked "Do Not Contact" in Master_Profiles
+            # This is handled in update_master_profiles by enriching the profile objects
+            
+            # Append enriched profiles to the ICP-specific worksheet
+            append_rows_to_worksheet(worksheet, list(enriched_profiles.values()))
             
             # We're removing the ICP information from columns to avoid headers issues
             
@@ -858,6 +865,7 @@ def append_icp_results(icp_results: List[Dict]):
         
     except Exception as e:
         logger.error(f"Error creating ICP-specific sheets: {str(e)}")
+        traceback.print_exc()
         raise
 
 # Add retry decorators for common gspread operations that may hit quota limits
@@ -942,3 +950,240 @@ def columns_auto_resize_with_retry(worksheet, start_column, end_column):
             # For other errors, log but don't retry
             logger.warning(f"Error in columns_auto_resize: {str(e)}")
             return None 
+
+def create_or_get_master_profiles_sheet(spreadsheet) -> gspread.Worksheet:
+    """
+    Create or get the Master_Profiles sheet that tracks all unique profiles across runs.
+    
+    Args:
+        spreadsheet: Google Sheets spreadsheet object
+        
+    Returns:
+        The Master_Profiles worksheet
+    """
+    sheet_name = "Master_Profiles"
+    
+    try:
+        # Try to get the existing sheet
+        worksheet = spreadsheet.worksheet(sheet_name)
+        logger.info(f"Found existing Master_Profiles sheet")
+    except WorksheetNotFound:
+        # Create a new sheet if it doesn't exist
+        worksheet = spreadsheet.add_worksheet(
+            title=sheet_name,
+            rows=1000,
+            cols=15
+        )
+        logger.info(f"Created new Master_Profiles sheet")
+        
+        # Set up the header row
+        header = [
+            "LinkedIn URL",               # A - Primary key for identifying unique profiles
+            "Provider ID",                # B - Unipile provider_id
+            "First Name",                 # C
+            "Last Name",                  # D
+            "Title",                      # E
+            "Company",                    # F
+            "Location",                   # G
+            "First Seen UTC",             # H - When this profile was first found
+            "Last Seen UTC",              # I - When this profile was most recently found
+            "Last System Action",         # J - Last action taken (e.g., "Invite Sent", "Message Generated")
+            "Last System Action UTC",     # K - When the last action was taken
+            "Unipile Connection State",   # L - Connection state from Unipile (NOT_CONNECTED, PENDING, CONNECTED)
+            "Unipile Last Interaction UTC", # M - Last message/interaction time from Unipile
+            "Source ICPs",                # N - List of ICPs this profile matched
+            "Do Not Contact"              # O - Boolean (TRUE/FALSE) user can set manually
+        ]
+        
+        worksheet.update("A1:O1", [header])
+        
+        # Auto-resize columns for better visibility
+        try:
+            worksheet.columns_auto_resize(1, 15)
+        except Exception as e:
+            logger.warning(f"Failed to auto-resize columns: {e}")
+        
+        # Freeze the header row
+        worksheet.freeze(rows=1)
+    
+    return worksheet
+
+
+def update_master_profiles(spreadsheet, profiles: List[Profile], icp_name: str) -> Dict[str, Profile]:
+    """
+    Update the Master_Profiles sheet with new profiles, returning enriched profiles.
+    
+    Args:
+        spreadsheet: Google Sheets spreadsheet object
+        profiles: List of Profile objects to update
+        icp_name: The name of the ICP that found these profiles
+        
+    Returns:
+        Dictionary mapping LinkedIn URLs to enriched Profile objects
+    """
+    if not profiles:
+        return {}
+    
+    # Get the Master_Profiles sheet
+    master_sheet = create_or_get_master_profiles_sheet(spreadsheet)
+    
+    # Get existing master profiles
+    try:
+        master_profiles_data = master_sheet.get_all_records()
+    except Exception as e:
+        logger.error(f"Failed to read Master_Profiles sheet: {e}")
+        master_profiles_data = []
+    
+    # Create a lookup map for faster access
+    master_map = {row.get('LinkedIn URL', ''): row for row in master_profiles_data if row.get('LinkedIn URL')}
+    
+    # Current timestamp for updates
+    now_utc = datetime.now(timezone.utc).isoformat()
+    
+    # Track new and updated profiles for batch operations
+    new_profiles = []
+    updated_profiles = []
+    
+    # Map to hold enriched profiles
+    enriched_profiles = {}
+    
+    for profile in profiles:
+        linkedin_url = profile.linkedin_url
+        
+        if not linkedin_url:
+            continue
+        
+        # Check if profile exists in master map
+        if linkedin_url in master_map:
+            # Update existing profile
+            existing = master_map[linkedin_url]
+            
+            # Enrich the profile with data from the master list
+            profile.contact_status = existing.get('Last System Action', 'Not contacted')
+            profile.connection_state = existing.get('Unipile Connection State', 'NOT_CONNECTED')
+            
+            # Prepare data for update
+            row_to_update = master_map[linkedin_url]
+            row_idx = master_profiles_data.index(row_to_update) + 2  # +2 for 1-indexed and header row
+            
+            # Update Source ICPs list if this ICP is not already there
+            source_icps = row_to_update.get('Source ICPs', '')
+            if icp_name not in source_icps:
+                if source_icps:
+                    source_icps = f"{source_icps}, {icp_name}"
+                else:
+                    source_icps = icp_name
+            
+            # Prepare the update
+            update = {
+                'Last Seen UTC': now_utc,
+                'Source ICPs': source_icps
+            }
+            
+            # Add to updates list
+            cell_updates = []
+            for col, value in update.items():
+                col_idx = [c for c, h in enumerate(['LinkedIn URL', 'Provider ID', 'First Name', 'Last Name', 
+                                                  'Title', 'Company', 'Location', 'First Seen UTC', 'Last Seen UTC',
+                                                  'Last System Action', 'Last System Action UTC', 'Unipile Connection State',
+                                                  'Unipile Last Interaction UTC', 'Source ICPs', 'Do Not Contact']) 
+                                                if h == col][0] + 1  # +1 for 1-indexed columns
+                cell_updates.append({
+                    'range': f"{chr(64 + col_idx)}{row_idx}",
+                    'values': [[value]]
+                })
+            
+            updated_profiles.append((row_idx, cell_updates))
+            
+        else:
+            # New profile
+            # If profile has a provider_id, use it, otherwise leave it blank
+            provider_id = getattr(profile, 'provider_id', '') if hasattr(profile, 'provider_id') else ''
+            
+            # Prepare row data
+            new_row = [
+                linkedin_url,             # LinkedIn URL
+                provider_id,              # Provider ID
+                profile.first_name or '', # First Name
+                profile.last_name or '',  # Last Name
+                profile.title or '',      # Title
+                profile.company or '',    # Company
+                profile.location or '',   # Location
+                now_utc,                  # First Seen UTC
+                now_utc,                  # Last Seen UTC
+                'Profile Discovered',     # Last System Action
+                now_utc,                  # Last System Action UTC
+                profile.connection_state or 'NOT_CONNECTED',  # Unipile Connection State
+                '',                       # Unipile Last Interaction UTC
+                icp_name,                 # Source ICPs
+                'FALSE'                   # Do Not Contact
+            ]
+            
+            new_profiles.append(new_row)
+            
+            # Set default contact status for newly discovered profiles
+            profile.contact_status = 'Not contacted'
+        
+        # Add to enriched profiles map
+        enriched_profiles[linkedin_url] = profile
+    
+    # Batch update existing profiles
+    if updated_profiles:
+        for _, cell_updates in updated_profiles:
+            try:
+                master_sheet.batch_update(cell_updates)
+            except Exception as e:
+                logger.error(f"Failed to update master profiles: {e}")
+    
+    # Append new profiles
+    if new_profiles:
+        try:
+            master_sheet.append_rows(new_profiles)
+            logger.info(f"Added {len(new_profiles)} new profiles to Master_Profiles sheet")
+        except Exception as e:
+            logger.error(f"Failed to append new profiles to Master_Profiles: {e}")
+    
+    return enriched_profiles
+
+
+def update_master_profile_action(spreadsheet, linkedin_url: str, action: str, provider_id: Optional[str] = None):
+    """
+    Update a profile's Last System Action in the Master_Profiles sheet.
+    
+    Args:
+        spreadsheet: Google Sheets spreadsheet object
+        linkedin_url: The LinkedIn URL of the profile to update
+        action: The action to record (e.g., "Invite Sent", "Message Generated")
+        provider_id: Optional provider_id to update if available
+    """
+    try:
+        # Get the Master_Profiles sheet
+        master_sheet = create_or_get_master_profiles_sheet(spreadsheet)
+        
+        # Find the row with this LinkedIn URL
+        try:
+            cell = master_sheet.find(linkedin_url)
+            row_idx = cell.row
+            
+            # Current timestamp for update
+            now_utc = datetime.now(timezone.utc).isoformat()
+            
+            # Prepare updates
+            updates = [
+                {"range": f"J{row_idx}", "values": [[action]]},
+                {"range": f"K{row_idx}", "values": [[now_utc]]}
+            ]
+            
+            # Add provider_id update if available
+            if provider_id:
+                updates.append({"range": f"B{row_idx}", "values": [[provider_id]]})
+            
+            # Apply updates
+            master_sheet.batch_update(updates)
+            logger.info(f"Updated action for {linkedin_url} to '{action}'")
+            
+        except gspread.exceptions.CellNotFound:
+            logger.warning(f"Profile URL {linkedin_url} not found in Master_Profiles sheet. Cannot update action.")
+            
+    except Exception as e:
+        logger.error(f"Failed to update master profile action: {e}") 
