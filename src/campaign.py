@@ -8,6 +8,8 @@ import gspread
 import httpx
 import concurrent.futures
 from functools import partial
+import os
+import traceback
 
 class CampaignStats: 
     generated=0
@@ -52,14 +54,34 @@ async def run_campaign(
     gc = None
     if spreadsheet_id and sheet_name:
         try:
-            # Use service account credentials for server deployments
-            gc = gspread.service_account(filename="config/service_account.json")
+            # Try multiple possible locations for service account file
+            service_account_paths = [
+                "service-account.json",  # Root directory
+                "config/service_account.json",  # Config directory
+                "../service-account.json"  # Parent directory
+            ]
+            
+            for path in service_account_paths:
+                try:
+                    if os.path.exists(path):
+                        gc = gspread.service_account(filename=path)
+                        logger.info(f"Connected to Google Sheets using service account at {path}")
+                        break
+                except Exception:
+                    continue
+            
+            # If no service account file was found, try OAuth
+            if gc is None:
+                gc = gspread.oauth()
+                logger.info("Connected to Google Sheets using OAuth")
+            
             # Open the spreadsheet and specific worksheet
             spread = gc.open_by_key(spreadsheet_id)
             worksheet = spread.worksheet(sheet_name)
             logger.info(f"Connected to Google Sheet '{sheet_name}'")
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {e}")
+            logger.debug(f"Google Sheets connection error details: {traceback.format_exc()}")
     
     # Create a Unipile client
     client = UnipileClient()
@@ -128,7 +150,24 @@ async def run_campaign(
                 # Fetch profile data to get the provider_id
                 logger.info(f"Fetching profile data for {p.linkedin_url}")
                 pdata = await client.get_profile(p.linkedin_url)
-                provider_id = pdata["provider_id"]  # Get the correct provider_id field
+                
+                # Check if pdata is a Profile object or a dictionary
+                if hasattr(pdata, 'provider_id'):
+                    # Direct attribute access for Profile objects
+                    provider_id = pdata.provider_id
+                elif isinstance(pdata, dict):
+                    # Dictionary access for API responses
+                    provider_id = pdata.get("provider_id")
+                    if not provider_id:
+                        # Try camelCase variant which might be in the API response
+                        provider_id = pdata.get("providerId")
+                else:
+                    # Handle unexpected data type
+                    raise TypeError(f"Expected Profile object or dictionary, got {type(pdata)}")
+                    
+                if not provider_id:
+                    raise ValueError(f"Could not find provider_id in profile data for {p.linkedin_url}")
+                    
                 logger.info(f"Retrieved provider_id: {provider_id}")
                 
                 # 4. Always fetch posts to provide data for comments
@@ -187,16 +226,25 @@ async def run_campaign(
                 
             except Exception as e:
                 stats.errors += 1
+                # Get detailed error information
+                error_details = traceback.format_exc()
+                error_type = type(e).__name__
                 error_message = str(e) if str(e).strip() else "Unknown error occurred during campaign processing"
-                logger.error(f"Campaign error for {p.linkedin_url}: {error_message}")
                 
+                # Log detailed error
+                logger.error(f"Campaign error for {p.linkedin_url}: {error_type}: {error_message}")
+                if error_details:
+                    logger.debug(f"Error details for {p.linkedin_url}:\n{error_details}")
+                
+                # Try to update the worksheet with error information
                 if worksheet and row_idx:
                     try:
                         now = dt.datetime.now(dt.UTC).isoformat()
+                        simple_error = f"{error_type}: {error_message[:100]}..." if len(error_message) > 100 else f"{error_type}: {error_message}"
                         worksheet.batch_update([
                             {"range": f"M{row_idx}", "values": [["Error"]]},
                             {"range": f"N{row_idx}", "values": [[now]]},
-                            {"range": f"O{row_idx}", "values": [[error_message]]}
+                            {"range": f"O{row_idx}", "values": [[simple_error]]}
                         ])
                     except Exception as update_error:
                         logger.error(f"Failed to update error in sheet: {update_error}")

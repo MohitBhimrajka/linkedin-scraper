@@ -81,6 +81,13 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
                 
                 # Get provider_id from either Provider ID column or by looking up URL in invites
                 linkedin_url = row.get("LinkedIn URL", "")
+                
+                # Skip row if LinkedIn URL is missing entirely
+                if not linkedin_url:
+                    logger.warning(f"Row {sheet_row} is missing LinkedIn URL, skipping")
+                    stats["not_found"] += 1
+                    continue
+                
                 provider_id = row.get("Provider ID", "")  
                 
                 # If we don't have provider_id but have URL, try to find in Unipile data

@@ -115,7 +115,22 @@ class UnipileClient:
         }
         if send_at:
             body["send_at"] = send_at
-        return await self._request("POST", "/users/invite", json=body)
+        
+        # Include account_id in both the request body AND the URL query params
+        response = await self._request(
+            "POST", 
+            "/users/invite", 
+            json=body, 
+            params={"account_id": self.account_id}
+        )
+        
+        # Only increment stats counter if we received a 201 Created status
+        if response.get("status") == 201 or response.get("created") is True:
+            logger.info(f"Successfully sent invitation to {provider_id}")
+        else:
+            logger.warning(f"Invitation to {provider_id} may not have been sent properly: {response}")
+            
+        return response
 
     async def comment_post(self, post_id:str, message:str, send_at:Optional[str]=None)->Dict:
         """Comment on a LinkedIn post"""
@@ -154,10 +169,21 @@ class UnipileClient:
         """Get list of sent invitations and their statuses"""
         try:
             # Use the working endpoint directly
-            return await self._request(
+            response = await self._request(
                 "GET", "/users/invitations",
                 params={"direction": "sent", "limit": limit, "account_id": self.account_id}
             )
+            
+            # Normalize response for compatibility with both API versions
+            if isinstance(response, list):
+                for item in response:
+                    # Ensure provider_id is present regardless of API version naming
+                    if "providerId" in item and "provider_id" not in item:
+                        item["provider_id"] = item["providerId"]
+                    if "connectionState" in item and "connection_state" not in item:
+                        item["connection_state"] = item["connectionState"]
+            
+            return response
         except Exception as e:
             logger.error(f"Error fetching sent invitations: {str(e)}")
             return []
@@ -166,10 +192,21 @@ class UnipileClient:
         """Get list of all relations and their connection states"""
         try:
             # Use the working endpoint directly
-            return await self._request(
+            response = await self._request(
                 "GET", "/users/relations",
                 params={"limit": limit, "account_id": self.account_id}
             )
+            
+            # Normalize response for compatibility with both API versions
+            if isinstance(response, list):
+                for item in response:
+                    # Ensure provider_id is present regardless of API version naming
+                    if "providerId" in item and "provider_id" not in item:
+                        item["provider_id"] = item["providerId"]
+                    if "connectionState" in item and "connection_state" not in item:
+                        item["connection_state"] = item["connectionState"]
+            
+            return response
         except Exception as e:
             logger.error(f"Error fetching relations: {str(e)}")
             return []

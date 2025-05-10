@@ -1,5 +1,6 @@
 import os
 import aiohttp
+import datetime
 from typing import Dict, List, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 from src.logging_conf import logger
@@ -23,6 +24,21 @@ async def fetch_profiles(query: str, start: int, num: int = 10) -> List[Dict]:
     if not api_key or not cx_id:
         raise ValueError("Missing required environment variables: GOOGLE_API_KEY, CX_ID")
     
+    # Validate num to ensure we don't exceed CSE limits (max 10 per request, max 100 items total)
+    if num > 10:
+        logger.warning(f"Requested num={num} exceeds CSE maximum of 10, limiting to 10")
+        num = 10
+        
+    # Ensure start + num - 1 <= 99 (total results max is 100)
+    if start + num - 1 > 99:
+        logger.warning(f"start={start} with num={num} would exceed max index of 99, adjusting")
+        num = max(1, 100 - start)
+    
+    # Generate explicit date range for past year instead of using 'date:r:1y' shortcut
+    today = datetime.datetime.now()
+    one_year_ago = today - datetime.timedelta(days=365)
+    date_range = f"date:r:{one_year_ago.strftime('%Y%m%d')}:{today.strftime('%Y%m%d')}"
+    
     base_url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": api_key,
@@ -30,7 +46,7 @@ async def fetch_profiles(query: str, start: int, num: int = 10) -> List[Dict]:
         "q": query,
         "start": start,
         "num": num,
-        "sort": "date:r:1y", # Prioritize recent profiles
+        "sort": date_range, # Explicit date range for past year
         "safe": "active",
         "filter": "0",   # No duplicate content filtering to ensure we get all profiles
         "exactTerms": "linkedin profile",  # Ensure results mention "LinkedIn profile"

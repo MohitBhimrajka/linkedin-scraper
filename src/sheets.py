@@ -11,6 +11,7 @@ from src.logging_conf import logger
 from google import genai
 from google.genai import types
 import traceback
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 
 def get_google_sheets_client():
@@ -323,9 +324,9 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             "Profile Image URL",
                             "Connection Msg",
                             "Comment Msg",
-                            "F/U‑1",
-                            "F/U‑2",
-                            "F/U‑3",
+                            "FU-1",
+                            "FU-2",
+                            "FU-3",
                             "InMail",
                             "Contact Status",
                             "Last Action UTC",
@@ -368,18 +369,18 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             if contact_status_updates:
                                 for i in range(0, len(contact_status_updates), 20):
                                     batch = contact_status_updates[i:i+20]
-                                    worksheet.batch_update(batch)
+                                    batch_update_with_retry(worksheet, batch)
                             
                             if connection_state_updates:
                                 for i in range(0, len(connection_state_updates), 20):
                                     batch = connection_state_updates[i:i+20]
-                                    worksheet.batch_update(batch)
+                                    batch_update_with_retry(worksheet, batch)
                             
                             logger.info(f"Set default status values for {len(all_values)-1} rows")
                         
                         # Auto-resize columns
                         try:
-                            worksheet.columns_auto_resize(0, 20)  # Resize columns A-V (0-20)
+                            columns_auto_resize_with_retry(worksheet, 0, 20)  # Resize columns A-V (0-20)
                         except Exception as resize_error:
                             logger.warning(f"Failed to auto-resize columns: {str(resize_error)}")
                     
@@ -408,9 +409,9 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "Profile Image URL",
                     "Connection Msg",
                     "Comment Msg",
-                    "F/U‑1",
-                    "F/U‑2",
-                    "F/U‑3",
+                    "FU-1",
+                    "FU-2",
+                    "FU-3",
                     "InMail",
                     "Contact Status",
                     "Last Action UTC",
@@ -422,7 +423,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "Unread Cnt",
                     "Last Msg UTC"
                 ]
-                worksheet.append_row(headers, value_input_option='RAW')
+                append_rows_with_retry(worksheet, [headers], value_input_option='RAW')
                 
                 # Format headers (make bold, freeze row, center alignment)
                 worksheet.format("A1:V1", {
@@ -434,7 +435,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 
                 # Auto-resize columns to fit content - this replaces set_column_width
                 try:
-                    worksheet.columns_auto_resize(0, 21)  # Resize columns A-V (includes new columns)
+                    columns_auto_resize_with_retry(worksheet, 0, 21)  # Resize columns A-V (includes new columns)
                 except Exception as e:
                     logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -525,7 +526,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
     for attempt in range(max_retries):
         try:
             # Append the rows to the worksheet
-            worksheet.append_rows(rows)
+            append_rows_with_retry(worksheet, rows)
             logger.info(f"Successfully appended {len(rows)} profiles to worksheet")
             
             # Format all cells for better readability
@@ -554,7 +555,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             
             # Auto-resize columns after adding data
             try:
-                worksheet.columns_auto_resize(0, 21)  # Resize columns A-V (includes new columns)
+                columns_auto_resize_with_retry(worksheet, 0, 21)  # Resize columns A-V (includes new columns)
             except Exception as e:
                 logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -857,4 +858,87 @@ def append_icp_results(icp_results: List[Dict]):
         
     except Exception as e:
         logger.error(f"Error creating ICP-specific sheets: {str(e)}")
-        raise 
+        raise
+
+# Add retry decorators for common gspread operations that may hit quota limits
+@retry(
+    retry=retry_if_exception_type(APIError),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    reraise=True
+)
+def batch_update_with_retry(worksheet, data):
+    """
+    Wrapper for worksheet.batch_update with exponential backoff retry logic.
+    
+    Args:
+        worksheet: gspread worksheet
+        data: Data to update in batch
+        
+    Returns:
+        Result from worksheet.batch_update
+    """
+    try:
+        return worksheet.batch_update(data)
+    except APIError as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            logger.warning(f"Google Sheets quota exceeded. Retrying with backoff: {str(e)}")
+        raise
+
+@retry(
+    retry=retry_if_exception_type(APIError),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    reraise=True
+)
+def append_rows_with_retry(worksheet, rows, value_input_option='RAW'):
+    """
+    Wrapper for worksheet.append_rows with exponential backoff retry logic.
+    
+    Args:
+        worksheet: gspread worksheet
+        rows: Rows to append
+        value_input_option: Input option (default 'RAW')
+        
+    Returns:
+        Result from worksheet.append_rows
+    """
+    try:
+        return worksheet.append_rows(rows, value_input_option=value_input_option)
+    except APIError as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            logger.warning(f"Google Sheets quota exceeded. Retrying with backoff: {str(e)}")
+        raise
+
+@retry(
+    retry=retry_if_exception_type(APIError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    reraise=True
+)
+def columns_auto_resize_with_retry(worksheet, start_column, end_column):
+    """
+    Wrapper for worksheet.columns_auto_resize with retry logic.
+    
+    Args:
+        worksheet: gspread worksheet
+        start_column: Start column index (0-based)
+        end_column: End column index (0-based)
+        
+    Returns:
+        Result from worksheet.columns_auto_resize
+    """
+    try:
+        return worksheet.columns_auto_resize(start_column, end_column)
+    except Exception as e:
+        # Handle both APIError and attribute errors (older gspread versions)
+        if isinstance(e, AttributeError):
+            logger.warning(f"columns_auto_resize not available in this version of gspread: {str(e)}")
+            return None
+        elif "quota" in str(e).lower() or "429" in str(e):
+            logger.warning(f"Google Sheets quota exceeded. Retrying with backoff: {str(e)}")
+            raise
+        else:
+            # For other errors, log but don't retry
+            logger.warning(f"Error in columns_auto_resize: {str(e)}")
+            return None 

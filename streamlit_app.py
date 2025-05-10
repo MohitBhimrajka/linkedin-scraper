@@ -1121,15 +1121,42 @@ def main():
                         if st.button(f"Launch {button_text} Campaign", use_container_width=True):
                             # Get the target profiles
                             if selected_indices:
-                                targets = [
-                                    Profile(**{k: v for k, v in row.items() if k in Profile.__annotations__})
-                                    for i, row in edited_df.iterrows() if i in selected_indices
-                                ]
+                                targets = []
+                                for i, row in edited_df.iterrows():
+                                    if i in selected_indices:
+                                        # Ensure the row has a linkedin_url which is required for Profile
+                                        if "LinkedIn URL" in row and row["LinkedIn URL"]:
+                                            # Convert DataFrame row to dict and filter only keys that are in Profile annotations
+                                            profile_data = {k: v for k, v in row.items() if k in Profile.__annotations__}
+                                            
+                                            # Map sheet column names to Profile field names (e.g., "LinkedIn URL" -> "linkedin_url")
+                                            if "LinkedIn URL" in row and "linkedin_url" not in profile_data:
+                                                profile_data["linkedin_url"] = row["LinkedIn URL"]
+                                                
+                                            try:
+                                                targets.append(Profile(**profile_data))
+                                            except Exception as e:
+                                                st.error(f"Error creating Profile object: {str(e)}")
+                                        else:
+                                            st.warning(f"Skipping row with missing LinkedIn URL: {row.get('First Name', '')} {row.get('Last Name', '')}")
                             else:
-                                targets = [
-                                    Profile(**{k: v for k, v in row.items() if k in Profile.__annotations__})
-                                    for _, row in edited_df.iterrows()
-                                ]
+                                targets = []
+                                for _, row in edited_df.iterrows():
+                                    # Ensure the row has a linkedin_url which is required for Profile
+                                    if "LinkedIn URL" in row and row["LinkedIn URL"]:
+                                        # Convert DataFrame row to dict and filter only keys that are in Profile annotations
+                                        profile_data = {k: v for k, v in row.items() if k in Profile.__annotations__}
+                                        
+                                        # Map sheet column names to Profile field names (e.g., "LinkedIn URL" -> "linkedin_url")
+                                        if "LinkedIn URL" in row and "linkedin_url" not in profile_data:
+                                            profile_data["linkedin_url"] = row["LinkedIn URL"]
+                                            
+                                        try:
+                                            targets.append(Profile(**profile_data))
+                                        except Exception as e:
+                                            st.error(f"Error creating Profile object: {str(e)}")
+                                    else:
+                                        st.warning(f"Skipping row with missing LinkedIn URL: {row.get('First Name', '')} {row.get('Last Name', '')}")
                                 
                             targets = targets[:limit]  # Apply the limit
                             

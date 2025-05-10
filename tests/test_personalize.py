@@ -22,8 +22,7 @@ def mock_gemini_response():
     """
     return mock_response
 
-# Skip the problematic test for now
-@pytest.mark.skip(reason="Temporarily skip due to string formatting issues with PROMPT_TMPL")
+# Test now works correctly with the prompt template
 def test_craft_messages(mock_gemini_response):
     sample = {"firstName": "Sara", "headline": "Product Manager @Acme"}
     
