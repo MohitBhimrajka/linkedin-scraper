@@ -18,6 +18,11 @@ A Python application that uses Google Custom Search to find LinkedIn profiles ma
    - Share your target Google Sheet with the service account email
    - (Optional) Get a Gemini API key for query optimization
 
+### Unipile credentials
+1. Sign up for Unipile and create a LinkedIn connector  
+2. Copy **API Key**, **DSN**, and **LinkedIn Account ID**  
+3. Add them to `.env` (`UNIPILE_API_KEY`, `UNIPILE_DSN`, `UNIPILE_ACCOUNT_ID`)
+
 3. Create a `.env` file with your credentials (see `.env.example`)
 
 ## Environment Variables
@@ -26,6 +31,9 @@ A Python application that uses Google Custom Search to find LinkedIn profiles ma
 - `CX_ID`: Your Custom Search Engine ID
 - `GOOGLE_SHEET_ID`: The ID of the Google Sheet where results will be stored
 - `GEMINI_API_KEY`: (Optional) Your Gemini API key for query optimization
+- `UNIPILE_API_KEY`: Your Unipile API key for LinkedIn automation
+- `UNIPILE_DSN`: Your Unipile data source name (e.g., api1.unipile.com:13111)
+- `UNIPILE_ACCOUNT_ID`: Your LinkedIn account ID from Unipile
 
 ## Usage
 
@@ -69,3 +77,28 @@ The results are stored in Google Sheets with the following columns:
 4. Last Name 
 5. Description
 6. Profile Image URL 
+7. Connection Msg
+8. Comment Msg
+9. F/U-1
+10. F/U-2
+11. F/U-3
+12. InMail
+13. Contact Status
+14. Last Action UTC
+
+## Running a Campaign
+
+Once you've collected LinkedIn profiles, you can run automated outreach campaigns:
+
+1. Navigate to the Campaign tab in the Streamlit app
+2. Select which ICP sheets (target audiences) to include
+3. Configure follow-up timing (1st, 2nd, and 3rd follow-up messages)
+4. Click "Launch Campaign" to begin outreach
+
+The campaign will:
+- Enrich each LinkedIn profile with additional data
+- Generate personalized connection messages using Gemini AI
+- Send connection requests with custom messages
+- Comment on recent posts (if available)
+- Schedule follow-up messages to be sent automatically after connections are accepted
+- Track progress in the Google Sheet

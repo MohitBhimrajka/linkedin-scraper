@@ -797,7 +797,7 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
     
     # RESULTS PAGE - Show search results
     elif st.session_state.page == 'results':
-        st.subheader("Search Results")
+        st.subheader("Found LinkedIn Profiles")
         
         # Show navigation buttons
         col1, col2, col3 = st.columns([1, 1, 1])
@@ -810,6 +810,10 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
                 del st.session_state.optimized_icps
                 del st.session_state.search_results
                 st.rerun()
+        
+        with col2:
+            if st.button("📤 Go to Campaign", use_container_width=True):
+                st.session_state.page = 'campaign'; st.rerun()
         
         # Results summary
         results_df = st.session_state.search_results
@@ -887,6 +891,45 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
                 )
         else:
             st.warning("No profiles found matching your ICPs. Try refining your criteria.")
+
+    # CAMPAIGN PAGE - Run outreach campaigns
+    elif st.session_state.page == 'campaign':
+        st.subheader("Run Campaign")
+
+        # Fetch worksheets list
+        sheet_id = os.getenv("GOOGLE_SHEET_ID")
+        from src.sheets import get_spreadsheet
+        spreadsheet = get_spreadsheet(sheet_id)
+        sheet_titles = [ws.title for ws in spreadsheet.worksheets() if ws.title not in ("Master_Sheet","Main Results")]
+
+        selected_sheets = st.multiselect("Select ICP sheets to target", sheet_titles)
+        follow1 = st.number_input("Days until follow‑up 1", 1, 30, 3)
+        follow2 = st.number_input("Days until follow‑up 2", 1, 60, 7)
+        follow3 = st.number_input("Days until follow‑up 3", 1, 90, 14)
+
+        if st.button("▶️ Launch Campaign", type="primary"):
+            # load rows from Sheets -> Profile objs
+            from src.transform import Profile
+            targets=[]
+            for name in selected_sheets:
+                ws = spreadsheet.worksheet(name)
+                data = ws.get_all_records()
+                for row in data:
+                    targets.append(Profile(
+                        linkedin_url=row["LinkedIn URL"],
+                        title=row["Title"],
+                        first_name=row["First Name"],
+                        last_name=row["Last Name"],
+                        description=row["Description"],
+                        profile_image_url=row["Profile Image URL"]
+                    ))
+            if targets:
+                import asyncio
+                from src.campaign import run_campaign
+                stats = asyncio.run(run_campaign(targets, (follow1,follow2,follow3)))
+                st.success(f"Invitations sent: {stats.sent}, errors: {stats.errors}")
+            else:
+                st.warning("Nothing to send!")
 
 
 if __name__ == "__main__":

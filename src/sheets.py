@@ -326,12 +326,20 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "First Name", 
                     "Last Name", 
                     "Description", 
-                    "Profile Image URL"
+                    "Profile Image URL",
+                    "Connection Msg",
+                    "Comment Msg",
+                    "F/U‑1",
+                    "F/U‑2",
+                    "F/U‑3",
+                    "InMail",
+                    "Contact Status",
+                    "Last Action UTC"
                 ]
                 worksheet.append_row(headers, value_input_option='RAW')
                 
                 # Format headers (make bold, freeze row, center alignment)
-                worksheet.format("A1:F1", {
+                worksheet.format("A1:N1", {
                     "textFormat": {"bold": True},
                     "horizontalAlignment": "CENTER",
                     "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -340,7 +348,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 
                 # Auto-resize columns to fit content - this replaces set_column_width
                 try:
-                    worksheet.columns_auto_resize(0, 5)  # Resize columns A-F
+                    worksheet.columns_auto_resize(0, 13)  # Resize columns A-N
                 except Exception as e:
                     logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -397,7 +405,15 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             profile.first_name or "",
             profile.last_name or "",
             description,
-            profile_image_url
+            profile_image_url,
+            "",  # Connection Msg
+            "",  # Comment Msg
+            "",  # F/U-1
+            "",  # F/U-2
+            "",  # F/U-3
+            "",  # InMail
+            "",  # Contact Status
+            ""   # Last Action UTC
         ])
     
     # Retry logic for append operations (in case of API rate limits)
@@ -426,7 +442,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
                             format_last_row = min(last_row, max_format_row)
                             
                             # Add formatting for better readability
-                            worksheet.format(f"A{first_new_row}:F{format_last_row}", {
+                            worksheet.format(f"A{first_new_row}:N{format_last_row}", {
                                 "wrapStrategy": "WRAP",  # Change from CLIP to WRAP
                                 "verticalAlignment": "TOP",
                                 "padding": {"top": 2, "bottom": 2}
@@ -436,7 +452,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             
             # Auto-resize columns after adding data
             try:
-                worksheet.columns_auto_resize(0, 5)  # Resize columns A-F
+                worksheet.columns_auto_resize(0, 13)  # Resize columns A-N
             except Exception as e:
                 logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
