@@ -219,18 +219,24 @@ class UnipileClient:
         """Get list of sent invitations and their statuses"""
         try:
             # Use the working endpoint directly
-            response = await self._request(
+            response_data = await self._request(
                 "GET", "/users/invitations",
                 params={"direction": "sent", "limit": limit, "account_id": self.account_id}
             )
             
-            # Ensure we have a valid list
-            if not isinstance(response, list):
-                logger.error(f"Expected list from /users/invitations, got {type(response)}. Response: {str(response)[:200]}")
+            # Handle both dict with 'items' and direct list response formats
+            if isinstance(response_data, dict) and "items" in response_data and isinstance(response_data["items"], list):
+                items_list = response_data["items"]
+                logger.debug(f"Using 'items' list from dictionary response for /users/invitations")
+            elif isinstance(response_data, list):
+                items_list = response_data
+                logger.debug(f"Using direct list response for /users/invitations")
+            else:
+                logger.error(f"Expected dict with 'items' list or a direct list from /users/invitations, got {type(response_data)}. Response: {str(response_data)[:200]}")
                 return []
             
             # Normalize response for compatibility with both API versions
-            for item in response:
+            for item in items_list:
                 if not isinstance(item, dict):
                     logger.warning(f"Skipping non-dict item in invitations list: {str(item)[:100]}")
                     continue
@@ -241,7 +247,7 @@ class UnipileClient:
                 if "connectionState" in item and "connection_state" not in item:
                     item["connection_state"] = item["connectionState"]
             
-            return response
+            return items_list
         except Exception as e:
             logger.error(f"Error fetching sent invitations: {str(e)}")
             return []
@@ -250,18 +256,24 @@ class UnipileClient:
         """Get list of all relations and their connection states"""
         try:
             # Use the working endpoint directly
-            response = await self._request(
+            response_data = await self._request(
                 "GET", "/users/relations",
                 params={"limit": limit, "account_id": self.account_id}
             )
             
-            # Ensure we have a valid list
-            if not isinstance(response, list):
-                logger.error(f"Expected list from /users/relations, got {type(response)}. Response: {str(response)[:200]}")
+            # Handle both dict with 'items' and direct list response formats
+            if isinstance(response_data, dict) and "items" in response_data and isinstance(response_data["items"], list):
+                items_list = response_data["items"]
+                logger.debug(f"Using 'items' list from dictionary response for /users/relations")
+            elif isinstance(response_data, list):
+                items_list = response_data
+                logger.debug(f"Using direct list response for /users/relations")
+            else:
+                logger.error(f"Expected dict with 'items' list or a direct list from /users/relations, got {type(response_data)}. Response: {str(response_data)[:200]}")
                 return []
             
             # Normalize response for compatibility with both API versions
-            for item in response:
+            for item in items_list:
                 if not isinstance(item, dict):
                     logger.warning(f"Skipping non-dict item in relations list: {str(item)[:100]}")
                     continue
@@ -272,7 +284,7 @@ class UnipileClient:
                 if "connectionState" in item and "connection_state" not in item:
                     item["connection_state"] = item["connectionState"]
             
-            return response
+            return items_list
         except Exception as e:
             logger.error(f"Error fetching relations: {str(e)}")
             return []
@@ -281,18 +293,24 @@ class UnipileClient:
         """Get list of conversations with unread counts and last message timestamps"""
         try:
             # Use the working endpoint directly
-            response = await self._request(
+            response_data = await self._request(
                 "GET", "/users/conversations",
                 params={"limit": limit, "account_id": self.account_id}
             )
             
-            # Ensure we have a valid list
-            if not isinstance(response, list):
-                logger.error(f"Expected list from /users/conversations, got {type(response)}. Response: {str(response)[:200]}")
+            # Handle both dict with 'items' and direct list response formats
+            if isinstance(response_data, dict) and "items" in response_data and isinstance(response_data["items"], list):
+                items_list = response_data["items"]
+                logger.debug(f"Using 'items' list from dictionary response for /users/conversations")
+            elif isinstance(response_data, list):
+                items_list = response_data
+                logger.debug(f"Using direct list response for /users/conversations")
+            else:
+                logger.error(f"Expected dict with 'items' list or a direct list from /users/conversations, got {type(response_data)}. Response: {str(response_data)[:200]}")
                 return []
             
             # Process items if needed
-            for item in response:
+            for item in items_list:
                 if not isinstance(item, dict):
                     logger.warning(f"Skipping non-dict item in conversations list: {str(item)[:100]}")
                     continue
@@ -301,7 +319,7 @@ class UnipileClient:
                 if "providerId" in item and "provider_id" not in item:
                     item["provider_id"] = item["providerId"]
             
-            return response
+            return items_list
         except Exception as e:
             logger.error(f"Error fetching conversations: {str(e)}")
             return []

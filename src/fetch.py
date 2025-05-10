@@ -29,10 +29,8 @@ async def fetch_profiles(query: str, start: int, num: int = 10) -> List[Dict]:
         logger.warning(f"Requested num={num} exceeds CSE maximum of 10, limiting to 10")
         num = 10
         
-    # Ensure start + num - 1 <= 99 (total results max is 100)
-    if start + num - 1 > 99:
-        logger.warning(f"start={start} with num={num} would exceed max index of 99, adjusting")
-        num = max(1, 100 - start)
+    # PageIterator now correctly handles max start values for Google's 100 result limit
+    # So we don't need to adjust num here anymore
     
     # Generate explicit date range for past year instead of using 'date:r:1y' shortcut
     today = datetime.datetime.now()

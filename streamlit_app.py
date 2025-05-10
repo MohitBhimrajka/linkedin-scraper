@@ -1052,7 +1052,7 @@ def main():
                                 
                                 # Look for this profile in unipile data
                                 current_state = None
-                                if provider_id:
+                                if provider_id and provider_id in unipile_relations_map:
                                     current_state = unipile_relations_map.get(provider_id)
                                 
                                 if not current_state:
@@ -1066,8 +1066,8 @@ def main():
                                 
                                 # Check if this profile has a pending invitation
                                 has_pending_invite = False
-                                if provider_id:
-                                    has_pending_invite = provider_id in unipile_invites_map
+                                if provider_id and provider_id in unipile_invites_map:
+                                    has_pending_invite = True
                                     
                                 if not has_pending_invite and not current_state:
                                     # Try to match in invites by identifier
@@ -1099,7 +1099,7 @@ def main():
                                 if 'Last System Action' in master_data:
                                     row['Contact Status'] = master_data.get('Last System Action')
                                 
-                                # Add the row to our filtered list
+                                # Add the row to our enriched list
                                 enriched_rows.append(row)
                             
                             # Create a new DataFrame with our enriched data
@@ -1207,14 +1207,30 @@ def main():
                         # Display filtered profiles with editable fields
                         st.subheader(f"Profiles to Process ({len(filtered_df)} matching)")
                         
+                        # Ensure all expected columns are present before showing in editor
+                        expected_columns = [
+                            "LinkedIn URL", "First Name", "Last Name", "Title", "Company", "Location", 
+                            "Connection Msg", "Comment Msg", "FU-1", "FU-2", "FU-3",
+                            "Connection State", "Contact Status", "Recommended Action"
+                        ]
+                        
+                        for col in expected_columns:
+                            if col not in filtered_df.columns:
+                                filtered_df[col] = ""  # Add missing columns with empty strings
+                        
+                        # Debug information (show columns that will be displayed)
+                        logger.debug(f"DataFrame columns for data_editor: {filtered_df.columns.tolist()}")
+                        
                         # Show editable data grid
                         edited_df = st.data_editor(
                             filtered_df,
                             column_config={
-                                "LinkedIn URL": st.column_config.TextColumn("LinkedIn URL", disabled=True),
+                                "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL", disabled=True, display_text="Open Profile"),
                                 "First Name": st.column_config.TextColumn("First Name", disabled=True),
                                 "Last Name": st.column_config.TextColumn("Last Name", disabled=True),
                                 "Title": st.column_config.TextColumn("Title", disabled=True),
+                                "Company": st.column_config.TextColumn("Company", disabled=True),
+                                "Location": st.column_config.TextColumn("Location", disabled=True),
                                 "Connection Msg": st.column_config.TextColumn("Connection Msg", width="large"),
                                 "Comment Msg": st.column_config.TextColumn("Comment Msg", width="large"),
                                 "FU-1": st.column_config.TextColumn("Follow-up 1", width="large"),
