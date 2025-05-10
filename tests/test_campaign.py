@@ -16,8 +16,8 @@ def sample_profile():
     )
 
 @pytest.mark.asyncio
-async def test_generate_only_mode(monkeypatch):
-    """Test that Generate mode doesn't call Unipile APIs"""
+async def test_generate_only_mode(monkeypatch, sample_profile):
+    """Test that Generate only mode doesn't call Unipile APIs"""
     
     # Mock the UnipileClient methods to count calls
     api_calls = {"get_profile": 0, "send_invitation": 0}
@@ -51,8 +51,7 @@ async def test_generate_only_mode(monkeypatch):
     monkeypatch.setattr("src.unipile_client.UnipileClient.close", mock_close)
     
     # Run campaign in Generate only mode
-    profile = sample_profile()
-    stats = await run_campaign([profile], mode="Generate")
+    stats = await run_campaign([sample_profile], mode="Generate only")
     
     # In Generate mode, we should get profile data but not send invitations
     assert api_calls["get_profile"] == 1
@@ -62,8 +61,8 @@ async def test_generate_only_mode(monkeypatch):
     assert stats.skipped == 1
 
 @pytest.mark.asyncio
-async def test_invite_only_mode(monkeypatch):
-    """Test that Invite mode calls API but doesn't comment"""
+async def test_invite_only_mode(monkeypatch, sample_profile):
+    """Test that Invite only mode calls API but doesn't comment"""
     
     # Mock the UnipileClient methods to count calls
     api_calls = {"get_profile": 0, "send_invitation": 0, "comment_post": 0}
@@ -106,8 +105,7 @@ async def test_invite_only_mode(monkeypatch):
     monkeypatch.setattr("src.unipile_client.UnipileClient.close", mock_close)
     
     # Run campaign in Invite only mode
-    profile = sample_profile()
-    stats = await run_campaign([profile], mode="Invite")
+    stats = await run_campaign([sample_profile], mode="Invite only")
     
     # In Invite mode, we should get profile data and send invitations but not comment
     assert api_calls["get_profile"] == 1

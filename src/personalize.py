@@ -53,13 +53,13 @@ Your task is to craft hyper-personalized messages that demonstrate you've genuin
    - InMail: Professional but warm, clear value proposition
 
 You MUST return a valid JSON object with EXACTLY these keys:
-{
+{{{{
  "connection": "<120‑char hyper-personalized connection request>",
  "comment": "<substantive, thoughtful reply to recent post or empty if no post>",
  "followups": ["<value-adding follow-up 1>", "<relationship-building follow-up 2>", "<action-oriented follow-up 3>"],
  "inmail_subject": "<personalized, attention-grabbing subject>",
  "inmail_body": "<personalized message up to 500 chars>"
-}
+}}}}
 """
 
 def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
@@ -74,17 +74,23 @@ def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
         Dictionary with personalized connection request, comment, follow-ups, and InMail
     """
     # Enrich the input data to provide more context for personalization
+    # Handle both old and new API field names
+    first_name = profile_data.get("first_name", profile_data.get("firstName", ""))
+    last_name = profile_data.get("last_name", profile_data.get("lastName", ""))
+    headline = profile_data.get("headline", profile_data.get("title", ""))
+    industry = profile_data.get("industry", "")
+    company = profile_data.get("company_name", profile_data.get("company", profile_data.get("companyName", "")))
+    
     input_data = {
         "profile": profile_data,
         "recent_post": recent_post,
-        # Add industry context if available
-        "industry_context": profile_data.get("industry", ""),
-        # Add current role details if available
-        "current_role": profile_data.get("headline", "") or profile_data.get("title", ""),
-        # Extract any skills if available
+        "first_name": first_name,
+        "last_name": last_name,
+        "industry_context": industry,
+        "current_role": headline,
         "skills": profile_data.get("skills", []),
-        # Extract company information if available
-        "company": profile_data.get("company", profile_data.get("companyName", ""))
+        "company": company,
+        "provider_id": profile_data.get("provider_id", "")  # Store the provider_id for reference
     }
     
     # Create well-formatted JSON for the prompt
@@ -134,13 +140,13 @@ def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
     
     # Fallback response if all attempts fail but don't raise an exception
     return {
-        "connection": f"Noticed your work in {profile_data.get('industry', 'your industry')}. I'm exploring similar challenges - would love to connect!",
+        "connection": f"Noticed your work in {industry or 'your industry'}. I'm exploring similar challenges - would love to connect!",
         "comment": "Insightful perspective! I've been thinking about this topic recently and appreciate your take.",
         "followups": [
             "Hope you're having a great week! Wanted to share this article that relates to your recent post.",
             "Just came across this resource that might interest you given your background.",
             "Would value your perspective on a project I'm working on - any chance we could chat briefly?"
         ],
-        "inmail_subject": f"Quick question about {profile_data.get('industry', 'your industry')} approach",
-        "inmail_body": f"Hi {profile_data.get('firstName', 'there')}, I noticed your experience with {profile_data.get('headline', 'your current role')}. I'm working on similar challenges and would love to learn from your approach. Would you be open to a brief conversation about how you've navigated this space? I'm happy to share my insights as well."
+        "inmail_subject": f"Quick question about {industry or 'your industry'} approach",
+        "inmail_body": f"Hi {first_name or 'there'}, I noticed your experience with {headline or 'your current role'}. I'm working on similar challenges and would love to learn from your approach. Would you be open to a brief conversation about how you've navigated this space? I'm happy to share my insights as well."
     } 

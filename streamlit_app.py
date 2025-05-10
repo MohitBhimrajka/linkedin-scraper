@@ -8,14 +8,15 @@ import time
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from gspread.exceptions import WorksheetNotFound
+from gspread.exceptions import WorksheetNotFound, GSpreadException
 
 # Import from our scraper
 from src.runner import process_query, load_queries
 from src.throttle import Batcher
-from src.transform import normalize_results
-from src.sheets import append_rows, append_icp_results, get_spreadsheet, get_google_sheets_client
+from src.transform import normalize_results, Profile
+from src.sheets import append_rows, append_icp_results, get_spreadsheet, get_google_sheets_client, generate_sheet_name
 from src.logging_conf import logger
+from src.campaign import run_campaign
 
 
 # Load environment variables
@@ -834,7 +835,6 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
                 
                 for i, icp_data in enumerate(st.session_state.optimized_icps):
                     # Generate the sheet name using the same logic as in sheets.py
-                    from src.sheets import generate_sheet_name
                     sheet_name = generate_sheet_name(icp_data["original"], i)
                     gid = i + 1  # Estimate the sheet GID (may not be perfect but often works)
                     sheet_specific_url = f"{sheet_url}#gid={gid}"
@@ -898,7 +898,6 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
 
         # Fetch worksheets list
         sheet_id = os.getenv("GOOGLE_SHEET_ID")
-        from src.sheets import get_spreadsheet
         spreadsheet = get_spreadsheet(sheet_id)
         sheet_titles = [ws.title for ws in spreadsheet.worksheets() if ws.title not in ("Master_Sheet","Main Results")]
 
@@ -925,10 +924,24 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
             
             # Load profiles from selected sheet
             ws = spreadsheet.worksheet(selected_sheet)
-            data = ws.get_all_records()
+            try:
+                data = ws.get_all_records()
+            except Exception as e:
+                st.error(f"Error loading sheet data: {str(e)}")
+                st.info("Trying to load with explicit headers...")
+                # Define the expected headers
+                expected_headers = [
+                    "LinkedIn URL", "Title", "First Name", "Last Name", "Description", 
+                    "Profile Image URL", "Connection Msg", "Comment Msg", "F/U‑1", 
+                    "F/U‑2", "F/U‑3", "InMail", "Contact Status", "Last Action UTC", "Error Msg"
+                ]
+                try:
+                    data = ws.get_all_records(expected_headers=expected_headers)
+                except Exception as e2:
+                    st.error(f"Failed to load sheet data: {str(e2)}")
+                    data = []
             
-            # Create DataFrame for display and selection
-            import pandas as pd
+                                        # Create DataFrame for display and selection
             df = pd.DataFrame(data)
             
             if not df.empty:
@@ -949,7 +962,6 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
                 
                 # Launch button
                 if st.button("▶️ Launch Campaign", type="primary"):
-                    from src.transform import Profile
                     
                     # Create targets list from selected rows or all rows
                     targets = []
@@ -979,8 +991,6 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
                             ))
                     
                     if targets:
-                        import asyncio
-                        from src.campaign import run_campaign
                         
                         # Show progress
                         progress_bar = st.progress(0)
@@ -991,7 +1001,7 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
                         stats = asyncio.run(run_campaign(
                             profiles=targets, 
                             followup_days=(follow1, follow2, follow3),
-                            mode=mode.split(" ")[0],  # Extract just the first word (Generate, Invite, Full)
+                            mode=mode,  # Pass the full mode string instead of just the first word
                             spreadsheet_id=sheet_id,
                             sheet_name=selected_sheet
                         ))

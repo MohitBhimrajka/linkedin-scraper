@@ -1,6 +1,7 @@
 import os, httpx, asyncio, tenacity
 from typing import Any, Dict, Optional, List
 from src.logging_conf import logger
+from urllib.parse import quote_plus
 
 class UnipileAuthError(RuntimeError): ...
 class UnipileClient:
@@ -21,16 +22,14 @@ class UnipileClient:
     async def _request(self, method:str, path:str, **kw)->Any:
         url = f"{self.base}{path}"
         
-        # Only add account_id to query params for GET requests
-        # For POST/PUT, it should be in the JSON body if needed
-        if method.upper() == "GET":
+        # For GET requests, add account_id to query params if not already there
+        if method == "GET":
             if "params" not in kw: kw["params"] = {}
-            kw["params"].setdefault("account_id", self.account_id)
-        elif "json" in kw and isinstance(kw["json"], dict) and "account_id" not in kw["json"]:
-            # For POST requests with JSON body, add account_id to the body if it's not already there
-            # and if the endpoint isn't already including it in the path
-            if not path.startswith("/profiles/") and not path.startswith("/posts/"):
-                kw["json"]["account_id"] = self.account_id
+            if "account_id" not in kw["params"]:
+                kw["params"]["account_id"] = self.account_id
+        
+        # For POST requests, we'll handle account_id in the specific methods
+        # as it depends on the endpoint
 
         @tenacity.retry(stop=tenacity.stop_after_attempt(3),
                         wait=tenacity.wait_exponential(multiplier=1, min=2, max=8),
@@ -44,27 +43,58 @@ class UnipileClient:
 
     # helper endpoints
     async def get_profile(self, profile_url:str)->Dict:
-        path="/profiles/enrich"
-        return await self._request("GET", path, params={"url": profile_url})
+        """Retrieve a LinkedIn profile by URL or identifier"""
+        # Extract the profile identifier from the URL
+        ident = profile_url.rstrip('/').split('/')[-1]
+        return await self._request(
+            "GET", 
+            f"/users/{ident}",
+            params={"account_id": self.account_id}
+        )
 
-    async def recent_posts(self, profile_id:str, limit:int=3)->List[Dict]:
-        return await self._request("GET", f"/profiles/{profile_id}/posts", params={"limit":limit})
+    async def recent_posts(self, provider_id:str, limit:int=3)->List[Dict]:
+        """Get recent posts from a LinkedIn profile"""
+        return await self._request(
+            "GET", 
+            f"/users/{provider_id}/posts",
+            params={"account_id": self.account_id, "limit": limit}
+        )
 
-    async def send_invitation(self, profile_id:str, message:str)->Dict:
-        body={"recipient_id": profile_id, "account_id": self.account_id, "message": message}
-        return await self._request("POST", "/invitations", json=body)
+    async def send_invitation(self, provider_id:str, message:str)->Dict:
+        """Send a connection invitation to a LinkedIn profile"""
+        body = {
+            "provider_id": provider_id,
+            "account_id": self.account_id,
+            "message": message
+        }
+        return await self._request("POST", "/users/invite", json=body)
 
     async def comment_post(self, post_id:str, message:str)->Dict:
-        return await self._request("POST", f"/posts/{post_id}/comments", json={"text":message})
+        """Comment on a LinkedIn post"""
+        return await self._request(
+            "POST", 
+            f"/posts/{post_id}/comment",
+            json={"account_id": self.account_id, "text": message}
+        )
 
     async def send_message(self, conversation_id:str, message:str, send_at:Optional[str]=None)->Dict:
-        body={"conversation_id": conversation_id,"text":message}
+        """Send a message in an existing conversation"""
+        body={
+            "conversation_id": conversation_id,
+            "text": message,
+            "account_id": self.account_id
+        }
         if send_at: body["send_at"]=send_at
         return await self._request("POST","/messages", json=body)
 
-    async def send_inmail(self, profile_id:str, subject:str, body:str)->Dict:
+    async def send_inmail(self, provider_id:str, subject:str, body:str)->Dict:
+        """Send an InMail to a LinkedIn profile"""
         return await self._request("POST","/inmails", json={
-            "recipient_id": profile_id, "subject": subject, "body": body})
+            "provider_id": provider_id, 
+            "subject": subject, 
+            "body": body,
+            "account_id": self.account_id
+        })
             
     async def close(self):
         """Close the HTTP client session."""

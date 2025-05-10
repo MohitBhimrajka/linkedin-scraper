@@ -38,6 +38,7 @@ async def run_campaign(
     
     # Find the sheet if IDs are provided to update campaign messages
     worksheet = None
+    all_data = []
     if spreadsheet_id and sheet_name:
         try:
             from src.sheets import get_spreadsheet
@@ -50,10 +51,16 @@ async def run_campaign(
             worksheet = None
     
     for i, p in enumerate(profiles):
+        # Initialize row_idx outside the try block
+        row_idx = None
+        
         try:
             # 1 fetch enriched data (always do this regardless of mode)
             pdata = await client.get_profile(p.linkedin_url)
-            posts = await client.recent_posts(pdata["id"], limit=1) if mode != "Generate only" else []
+            # Get the provider_id from the API response
+            provider_id = pdata["provider_id"]  # Changed from 'id' to 'provider_id'
+            
+            posts = await client.recent_posts(provider_id, limit=1) if mode != "Generate only" else []
             recent = posts[0]["text"] if posts else ""
             msgs = craft_messages(pdata, recent)
             stats.generated += 1
@@ -62,14 +69,13 @@ async def run_campaign(
             if worksheet:
                 try:
                     # Find row by LinkedIn URL (add 2 because of header and 1-based indexing)
-                    row_idx = None
                     for idx, row in enumerate(all_data):
                         if row.get("LinkedIn URL") == p.linkedin_url:
                             row_idx = idx + 2  # +2 for header and 1-based indexing
                             break
                     
                     if row_idx:
-                        now = dt.datetime.utcnow().replace(tzinfo=utc).isoformat()
+                        now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
                         # Update the message columns
                         worksheet.update(f"G{row_idx}", msgs["connection"])  # Connection Msg
                         worksheet.update(f"H{row_idx}", msgs["comment"])     # Comment Msg
@@ -90,21 +96,21 @@ async def run_campaign(
                 continue
             
             # 2 send invitation (for all modes except "Generate only")
-            await client.send_invitation(pdata["id"], msgs["connection"])
+            await client.send_invitation(provider_id, msgs["connection"])  # Changed from profile_id to provider_id
             
             # Update status in sheet
             if worksheet and row_idx:
-                now = dt.datetime.utcnow().replace(tzinfo=utc).isoformat()
+                now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
                 worksheet.update(f"M{row_idx}", "INVITED")  # Contact Status
                 worksheet.update(f"N{row_idx}", now)        # Last Action UTC
             
             # 3 comment (for "Invite + Comment" and "Full" modes)
             if (mode == "Invite + Comment" or mode == "Full") and posts:
-                await client.comment_post(posts[0]["id"], msgs["comment"])
+                await client.comment_post(posts[0]["id"], msgs["comment"])  # Using post id which should be correct
                 
                 # Update status in sheet
                 if worksheet and row_idx:
-                    now = dt.datetime.utcnow().replace(tzinfo=utc).isoformat()
+                    now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
                     worksheet.update(f"M{row_idx}", "COMMENTED")  # Contact Status
                     worksheet.update(f"N{row_idx}", now)          # Last Action UTC
 
@@ -114,15 +120,15 @@ async def run_campaign(
             # and implement a separate process to check invitation status and send follow-ups later
             
             # We still calculate intended follow-up dates for reference
-            now = dt.datetime.utcnow().replace(tzinfo=utc)
+            now = dt.datetime.now(dt.UTC).replace(tzinfo=utc)
             followup_dates = []
-            for i in range(len(msgs["followups"])):
-                followup_dates.append((now + dt.timedelta(days=followup_days[i])).isoformat())
+            for j in range(len(msgs["followups"])):  # Changed i to j to avoid variable reuse
+                followup_dates.append((now + dt.timedelta(days=followup_days[j])).isoformat())
             
             # Mark follow-ups as ready if in Full mode
             if mode == "Full" and worksheet and row_idx:
                 worksheet.update(f"M{row_idx}", "FOLLOW-UPS READY")  # Contact Status
-                worksheet.update(f"N{row_idx}", now)                # Last Action UTC
+                worksheet.update(f"N{row_idx}", now.isoformat())      # Last Action UTC
                 
                 # In a real implementation, we would store the user ID and the follow-up dates
                 # in a separate table or queue for a background worker to process
@@ -132,10 +138,10 @@ async def run_campaign(
             stats.errors += 1
             logger.error(f"Campaign error for {p.linkedin_url}: {e}")
             
-            # Update status in sheet to show error
+            # Update status in sheet to show error - only if worksheet and row_idx are valid
             if worksheet and row_idx:
                 try:
-                    now = dt.datetime.utcnow().replace(tzinfo=utc).isoformat()
+                    now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
                     worksheet.update(f"M{row_idx}", "ERROR")  # Contact Status
                     worksheet.update(f"N{row_idx}", now)      # Last Action UTC
                     worksheet.update(f"O{row_idx}", str(e))   # Store error message in extra column

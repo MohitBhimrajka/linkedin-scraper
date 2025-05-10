@@ -326,14 +326,15 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             "F/U‑3",
                             "InMail",
                             "Contact Status",
-                            "Last Action UTC"
+                            "Last Action UTC",
+                            "Error Msg"
                         ]
                         
                         # Update headers
-                        worksheet.update("A1:N1", [headers])
+                        worksheet.update("A1:O1", [headers])
                         
                         # Format headers
-                        worksheet.format("A1:N1", {
+                        worksheet.format("A1:O1", {
                             "textFormat": {"bold": True},
                             "horizontalAlignment": "CENTER",
                             "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -341,7 +342,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                         
                         # Auto-resize columns
                         try:
-                            worksheet.columns_auto_resize(0, 13)  # Resize columns A-N
+                            worksheet.columns_auto_resize(0, 14)  # Resize columns A-O
                         except Exception as resize_error:
                             logger.warning(f"Failed to auto-resize columns: {str(resize_error)}")
                     
@@ -373,12 +374,13 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "F/U‑3",
                     "InMail",
                     "Contact Status",
-                    "Last Action UTC"
+                    "Last Action UTC",
+                    "Error Msg"
                 ]
                 worksheet.append_row(headers, value_input_option='RAW')
                 
                 # Format headers (make bold, freeze row, center alignment)
-                worksheet.format("A1:N1", {
+                worksheet.format("A1:O1", {
                     "textFormat": {"bold": True},
                     "horizontalAlignment": "CENTER",
                     "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -387,7 +389,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 
                 # Auto-resize columns to fit content - this replaces set_column_width
                 try:
-                    worksheet.columns_auto_resize(0, 13)  # Resize columns A-N
+                    worksheet.columns_auto_resize(0, 14)  # Resize columns A-O
                 except Exception as e:
                     logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -452,7 +454,8 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             "",  # F/U-3
             "",  # InMail
             "",  # Contact Status
-            ""   # Last Action UTC
+            "",  # Last Action UTC
+            ""   # Error Msg
         ])
     
     # Retry logic for append operations (in case of API rate limits)
@@ -481,7 +484,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
                             format_last_row = min(last_row, max_format_row)
                             
                             # Add formatting for better readability
-                            worksheet.format(f"A{first_new_row}:N{format_last_row}", {
+                            worksheet.format(f"A{first_new_row}:O{format_last_row}", {
                                 "wrapStrategy": "WRAP",  # Change from CLIP to WRAP
                                 "verticalAlignment": "TOP",
                                 "padding": {"top": 2, "bottom": 2}
@@ -491,7 +494,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             
             # Auto-resize columns after adding data
             try:
-                worksheet.columns_auto_resize(0, 13)  # Resize columns A-N
+                worksheet.columns_auto_resize(0, 14)  # Resize columns A-O
             except Exception as e:
                 logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -785,39 +788,8 @@ def append_icp_results(icp_results: List[Dict]):
             # Append profiles to the worksheet
             append_rows_to_worksheet(worksheet, icp_profiles)
             
-            # Update sheet properties to include query info - use a separate area
-            try:
-                # Add a title for the query info section
-                info_range = "H1:J1"
-                worksheet.update(info_range, [["ICP Information"]])
-                worksheet.format(info_range, {
-                    "textFormat": {"bold": True},
-                    "horizontalAlignment": "CENTER",
-                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 1.0}
-                })
-                worksheet.merge_cells("H1:J1")
-                
-                # Add the queries
-                info_range = "H2:J3"
-                info_values = [
-                    ["Original Query:", icp_data["original"], ""],
-                    ["Optimized Query:", icp_data["optimized"], ""]
-                ]
-                worksheet.update(info_range, info_values)
-                worksheet.format("H2:H3", {"textFormat": {"bold": True}})
-                
-                # Format the queries for better readability
-                worksheet.format("I2:I3", {"wrapStrategy": "CLIP"})
-                
-                # Auto-resize the query columns
-                try:
-                    worksheet.columns_auto_resize(7, 8)  # Columns H-I
-                except Exception:
-                    pass  # Non-critical, continue if this fails
+            # We're removing the ICP information from columns to avoid headers issues
             
-            except Exception as e:
-                logger.warning(f"Failed to add query info to worksheet: {str(e)}")
-        
         # Create a summary sheet
         create_summary_sheet(spreadsheet, icp_results)
         
