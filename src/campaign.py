@@ -202,11 +202,20 @@ async def run_campaign(
                     # 4. Always fetch posts to provide data for comments
                     try:
                         logger.info(f"Fetching recent posts for {provider_id}")
-                        posts_data = await client.recent_posts(provider_id=provider_id, limit=1) # Renamed to posts_data
+                        posts_data = await client.recent_posts(provider_id=provider_id, limit=1)
+                        
+                        # Ensure posts_data is a list
                         if not isinstance(posts_data, list):
                             logger.warning(f"Unexpected posts data structure received: {type(posts_data)}")
                             posts_data = []
-                        recent = posts_data[0]["text"] if posts_data and len(posts_data) > 0 and "text" in posts_data[0] else "" # Assign to 'recent'
+                            recent = ""
+                        else:
+                            # Get text from the first post if available
+                            recent = ""
+                            if posts_data and len(posts_data) > 0:
+                                post = posts_data[0]
+                                if isinstance(post, dict) and "text" in post:
+                                    recent = post["text"]
                     except IndexError:
                         logger.warning(f"No posts found for {provider_id}")
                         recent = ""
@@ -247,11 +256,58 @@ async def run_campaign(
                             error_updates = [
                                 {"range": f"O{row_idx}", "values": [["Error"]]},
                                 {"range": f"P{row_idx}", "values": [[now]]},
-                                {"range": f"Q{row_idx}", "values": [[str(e)]]}  # Column Q for Error Msg
+                                {"range": f"Q{row_idx}", "values": [[f"Invite: {str(e)[:100]}"]]}  # Column Q for Error Msg
                             ]
                             await asyncio.to_thread(worksheet.batch_update, error_updates)
                         stats.errors += 1
                     
+                    # 6. Comment on Recent Post (if mode involves commenting and post exists)
+                    if mode in ["Invite + Comment", "Full (invite, comment, follow-ups)"]:
+                        if p.comment_msg and posts_data:  # posts_data is the list from client.recent_posts
+                            try:
+                                # Attempt to comment on the first post if it has an ID
+                                if posts_data and len(posts_data) > 0 and "id" in posts_data[0]:
+                                    post_to_comment_id = posts_data[0]["id"]
+                                    logger.info(f"Commenting on post {post_to_comment_id} for {provider_id}" + (f" scheduled for {schedule_time}" if schedule_time else ""))
+                                    await client.comment_post(
+                                        post_id=post_to_comment_id,
+                                        message=p.comment_msg,
+                                        send_at=schedule_time 
+                                    )
+                                    logger.info(f"Successfully commented on post for {provider_id}")
+                                    
+                                    # Update sheet status to reflect the comment
+                                    if worksheet and row_idx:
+                                        # Get current status to potentially combine with "Invited"
+                                        current_contact_status_cell = await asyncio.to_thread(worksheet.cell, row_idx, 15)  # Column O for Contact Status
+                                        current_contact_status = current_contact_status_cell.value
+                                        new_status = "Commented"
+                                        if current_contact_status and "Invited" in current_contact_status:
+                                            new_status = "Invited & Commented"
+                                        
+                                        now = dt.datetime.now(dt.UTC).isoformat()
+                                        comment_status_updates = [
+                                            {"range": f"O{row_idx}", "values": [[new_status]]},
+                                            {"range": f"P{row_idx}", "values": [[now]]},  # Update last action time
+                                        ]
+                                        await asyncio.to_thread(worksheet.batch_update, comment_status_updates)
+                                else:
+                                    logger.warning(f"No valid post ID found to comment for {provider_id}, though posts_data was present.")
+                            except Exception as e:
+                                logger.error(f"Failed to comment on post for {provider_id}: {e}")
+                                if worksheet and row_idx:
+                                    now = dt.datetime.now(dt.UTC).isoformat()
+                                    error_updates = [
+                                        {"range": f"P{row_idx}", "values": [[now]]},  # Update last action time
+                                        {"range": f"Q{row_idx}", "values": [[f"Comment: {str(e)[:100]}"]]}  # Add error message
+                                    ]
+                                    await asyncio.to_thread(worksheet.batch_update, error_updates)
+                                stats.errors += 1
+                        elif not p.comment_msg:
+                            logger.info(f"No comment message generated for {provider_id}, skipping comment.")
+                        elif not posts_data:
+                            logger.info(f"No recent posts found for {provider_id}, skipping comment.")
+                
                 except Exception as e:
                     stats.errors += 1
                     # Get detailed error information

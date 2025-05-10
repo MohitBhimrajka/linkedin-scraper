@@ -1,4 +1,4 @@
-import os, httpx, asyncio, tenacity
+import os, httpx, asyncio, tenacity, json
 from typing import Any, Dict, Optional, List
 from src.logging_conf import logger
 from urllib.parse import quote_plus
@@ -17,7 +17,11 @@ class UnipileClient:
         if not all([self.api_key, self.dsn, self.account_id]):
             raise ValueError("Missing UNIPILE_API_KEY, UNIPILE_DSN or UNIPILE_ACCOUNT_ID")
         self.base = f"https://{self.dsn}/api/v1"
-        self.session = httpx.AsyncClient(timeout=timeout, headers={"X-API-KEY": self.api_key})
+        self.session = httpx.AsyncClient(
+            timeout=timeout, 
+            headers={"X-API-KEY": self.api_key}, 
+            follow_redirects=True  # Enable following redirects for 301/302 responses
+        )
 
     async def _request(self, method:str, path:str, **kw)->Any:
         url = f"{self.base}{path}"
@@ -39,7 +43,25 @@ class UnipileClient:
                 r = await self.session.request(method, url, **kw)
                 if r.status_code==401: raise UnipileAuthError("Bad key / account id")
                 r.raise_for_status()
-                return r.json()
+                
+                # Try to parse JSON response, but handle case where it's not JSON
+                try:
+                    json_response = r.json()
+                except Exception as json_err:
+                    # If JSON decoding fails, log the raw text and handle it appropriately
+                    raw_text = r.text
+                    logger.error(f"Failed to decode JSON response for {method} {url}. Raw text: {raw_text[:200]}...")
+                    
+                    # For list endpoints, return an empty list if we expected JSON but got something else
+                    if method == "GET" and any(suffix in path for suffix in ["/invitations", "/relations", "/conversations"]):
+                        logger.warning(f"Returning empty list for non-JSON response from {path}")
+                        return []
+                    
+                    # For other endpoints, log and return the raw text - the caller will need to handle it
+                    logger.warning(f"Returning raw response text for non-JSON response: {str(json_err)}")
+                    return {"error": "Non-JSON response", "raw_text": raw_text}
+                
+                return json_response
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error {e.response.status_code} for {method} {url}: {str(e)}")
                 if e.response.status_code == 429:
@@ -93,14 +115,22 @@ class UnipileClient:
                 params=params
             )
             
-            # Ensure we always return a list
-            items = response.get("items", [])
-            if not isinstance(items, list):
-                logger.warning(f"Expected list from posts API but got {type(items)}")
+            # Handle different possible response structures
+            if isinstance(response, dict):
+                # API may return {"items": [...]} structure
+                items = response.get("items", [])
+                if not isinstance(items, list):
+                    logger.warning(f"Expected list for 'items' in posts API but got {type(items)}")
+                    return []
+                return items
+            elif isinstance(response, list):
+                # API may return direct list of posts
+                return response
+            else:
+                # Unexpected response type
+                logger.warning(f"Unexpected response type from posts API: {type(response)}")
                 return []
                 
-            return items
-            
         except Exception as e:
             logger.warning(f"Error fetching posts for {provider_id}: {e}")
             # Return empty list instead of raising to make this non-fatal
@@ -124,11 +154,16 @@ class UnipileClient:
             params={"account_id": self.account_id}
         )
         
-        # Only increment stats counter if we received a 201 Created status
-        if response.get("status") == 201 or response.get("created") is True:
-            logger.info(f"Successfully sent invitation to {provider_id}")
+        # Check for the expected success response structure
+        # The Unipile API returns {'object': 'UserInvitationSent', 'invitation_id': '...'} on success
+        if isinstance(response, dict) and response.get("object") == "UserInvitationSent" and response.get("invitation_id"):
+            logger.info(f"Successfully sent invitation to {provider_id}. Invitation ID: {response.get('invitation_id')}")
         else:
-            logger.warning(f"Invitation to {provider_id} may not have been sent properly: {response}")
+            # Also check older API success indicators
+            if response.get("status") == 201 or response.get("created") is True:
+                logger.info(f"Successfully sent invitation to {provider_id} (legacy response)")
+            else:
+                logger.warning(f"Invitation to {provider_id} may not have been sent properly: {response}")
             
         return response
 
@@ -140,11 +175,26 @@ class UnipileClient:
         }
         if send_at:
             body["send_at"] = send_at
-        return await self._request(
-            "POST", 
-            f"/posts/{post_id}/comment",
-            json=body
-        )
+            
+        logger.info(f"Attempting to comment on post_id: {post_id} with message: '{message[:30]}...'")
+        
+        try:
+            response = await self._request(
+                "POST", 
+                f"/posts/{post_id}/comment",
+                json=body
+            )
+            
+            # Log response details
+            if isinstance(response, dict):
+                logger.info(f"Successfully posted comment to {post_id}. Response: {response}")
+            else:
+                logger.warning(f"Unexpected response type when commenting on post {post_id}: {type(response)}")
+                
+            return response
+        except Exception as e:
+            logger.error(f"Error posting comment to post {post_id}: {str(e)}")
+            raise
 
     async def send_message(self, conversation_id:str, message:str, send_at:Optional[str]=None)->Dict:
         """Send a message in an existing conversation"""
@@ -174,14 +224,22 @@ class UnipileClient:
                 params={"direction": "sent", "limit": limit, "account_id": self.account_id}
             )
             
+            # Ensure we have a valid list
+            if not isinstance(response, list):
+                logger.error(f"Expected list from /users/invitations, got {type(response)}. Response: {str(response)[:200]}")
+                return []
+            
             # Normalize response for compatibility with both API versions
-            if isinstance(response, list):
-                for item in response:
-                    # Ensure provider_id is present regardless of API version naming
-                    if "providerId" in item and "provider_id" not in item:
-                        item["provider_id"] = item["providerId"]
-                    if "connectionState" in item and "connection_state" not in item:
-                        item["connection_state"] = item["connectionState"]
+            for item in response:
+                if not isinstance(item, dict):
+                    logger.warning(f"Skipping non-dict item in invitations list: {str(item)[:100]}")
+                    continue
+                    
+                # Ensure provider_id is present regardless of API version naming
+                if "providerId" in item and "provider_id" not in item:
+                    item["provider_id"] = item["providerId"]
+                if "connectionState" in item and "connection_state" not in item:
+                    item["connection_state"] = item["connectionState"]
             
             return response
         except Exception as e:
@@ -197,14 +255,22 @@ class UnipileClient:
                 params={"limit": limit, "account_id": self.account_id}
             )
             
+            # Ensure we have a valid list
+            if not isinstance(response, list):
+                logger.error(f"Expected list from /users/relations, got {type(response)}. Response: {str(response)[:200]}")
+                return []
+            
             # Normalize response for compatibility with both API versions
-            if isinstance(response, list):
-                for item in response:
-                    # Ensure provider_id is present regardless of API version naming
-                    if "providerId" in item and "provider_id" not in item:
-                        item["provider_id"] = item["providerId"]
-                    if "connectionState" in item and "connection_state" not in item:
-                        item["connection_state"] = item["connectionState"]
+            for item in response:
+                if not isinstance(item, dict):
+                    logger.warning(f"Skipping non-dict item in relations list: {str(item)[:100]}")
+                    continue
+                    
+                # Ensure provider_id is present regardless of API version naming
+                if "providerId" in item and "provider_id" not in item:
+                    item["provider_id"] = item["providerId"]
+                if "connectionState" in item and "connection_state" not in item:
+                    item["connection_state"] = item["connectionState"]
             
             return response
         except Exception as e:
@@ -215,10 +281,27 @@ class UnipileClient:
         """Get list of conversations with unread counts and last message timestamps"""
         try:
             # Use the working endpoint directly
-            return await self._request(
+            response = await self._request(
                 "GET", "/users/conversations",
                 params={"limit": limit, "account_id": self.account_id}
             )
+            
+            # Ensure we have a valid list
+            if not isinstance(response, list):
+                logger.error(f"Expected list from /users/conversations, got {type(response)}. Response: {str(response)[:200]}")
+                return []
+            
+            # Process items if needed
+            for item in response:
+                if not isinstance(item, dict):
+                    logger.warning(f"Skipping non-dict item in conversations list: {str(item)[:100]}")
+                    continue
+                    
+                # Normalize fields if needed
+                if "providerId" in item and "provider_id" not in item:
+                    item["provider_id"] = item["providerId"]
+            
+            return response
         except Exception as e:
             logger.error(f"Error fetching conversations: {str(e)}")
             return []

@@ -426,11 +426,27 @@ async def fix_master_sheet_formatting():
 # Functions to help display metrics/stats from the data
 def get_relationship_stats(df):
     """Extract relationship stats from DataFrame for metrics display"""
+    
+    # Ensure columns exist, provide default empty Series if not
+    contact_status_col = df["Contact Status"] if "Contact Status" in df.columns else pd.Series(dtype=str)
+    connection_state_col = df["Connection State"] if "Connection State" in df.columns else pd.Series(dtype=str)
+    unread_cnt_col = df["Unread Cnt"] if "Unread Cnt" in df.columns else pd.Series(0, index=df.index, dtype=int)
+
+    # Count invites based on either Contact Status or Connection State
+    invites_sent_count = len(df[
+        (contact_status_col.str.contains("Invited", case=False, na=False)) | 
+        (connection_state_col.isin(["INVITED", "PENDING"]))
+    ])
+    
+    # Count comments based on Contact Status containing "Comment"
+    comments_count = len(df[contact_status_col.str.contains("Comment", case=False, na=False)])
+    
     stats = {
         "total": len(df),
-        "sent": len(df[df["Connection State"].isin(["INVITED", "PENDING"])]),
-        "connected": len(df[df["Connection State"] == "CONNECTED"]),
-        "unread": df["Unread Cnt"].sum() if "Unread Cnt" in df.columns else 0
+        "sent": invites_sent_count,
+        "connected": len(df[connection_state_col == "CONNECTED"]),
+        "unread": unread_cnt_col.sum(),
+        "comments": comments_count
     }
     return stats
 
@@ -1234,6 +1250,11 @@ def main():
                             # Show results
                             st.success(f"Campaign completed! Generated: {stats.generated}, Sent: {stats.sent}, Errors: {stats.errors}, Skipped: {stats.skipped}")
                             
+                            # Set a flag to indicate that data potentially changed (for Sync tab)
+                            if mode != "Generate only" and (stats.sent > 0 or stats.generated > 0):
+                                st.session_state.data_potentially_changed = True
+                                st.session_state.last_synced_sheet = selected_sheet
+
                             # If there were errors, show a detailed error section
                             if stats.errors > 0:
                                 with st.expander(f"⚠️ {stats.errors} Error(s) Occurred", expanded=True):
@@ -1301,11 +1322,27 @@ def main():
         if not sheet_titles:
             st.warning("No sheets available. Generate leads first in the Generate tab.")
         else:
+            # Initialize session state variables for sync tab if they don't exist
+            if 'data_potentially_changed' not in st.session_state:
+                st.session_state.data_potentially_changed = False
+            if 'last_synced_sheet' not in st.session_state:
+                st.session_state.last_synced_sheet = None
+                
             # Sheet selection
             selected_sheet = st.selectbox("Select sheet to monitor", sheet_titles)
             
             if selected_sheet:
                 try:
+                    # Auto-sync if data changed for the current sheet
+                    if st.session_state.data_potentially_changed and st.session_state.last_synced_sheet == selected_sheet:
+                        with st.spinner("Automatically syncing after recent campaign..."):
+                            logger.info(f"Auto-syncing sheet '{selected_sheet}' due to recent campaign activity.")
+                            sync_results = asyncio.run(sync_status(sheet_id, selected_sheet))
+                            st.success(f"Auto-sync completed! Updated {sync_results['updated']} records")
+                            # Reset the flag
+                            st.session_state.data_potentially_changed = False
+                            st.session_state.last_synced_sheet = None
+                    
                     # Load profiles from selected sheet
                     ws = spreadsheet.worksheet(selected_sheet)
                     data = ws.get_all_records()
@@ -1318,7 +1355,7 @@ def main():
                         stats = get_relationship_stats(df)
                         
                         # Create metrics row
-                        metric_cols = st.columns(4)
+                        metric_cols = st.columns(5)
                         with metric_cols[0]:
                             st.metric("Total Profiles", stats["total"])
                         with metric_cols[1]:
@@ -1326,6 +1363,8 @@ def main():
                         with metric_cols[2]:
                             st.metric("Connected", stats["connected"])
                         with metric_cols[3]:
+                            st.metric("Comments", stats["comments"])
+                        with metric_cols[4]:
                             st.metric("Unread Messages", stats["unread"])
                         
                         # Sync button
