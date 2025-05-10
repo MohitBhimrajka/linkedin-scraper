@@ -4,6 +4,7 @@ import datetime
 from typing import Dict, List, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 from src.logging_conf import logger
+import asyncio
 
 
 async def fetch_profiles(query: str, start: int, num: int = 10) -> List[Dict]:
@@ -79,6 +80,17 @@ async def _make_request(url: str, params: Dict) -> List[Dict]:
     Returns:
         List of search result items
     """
+    # Initialize the rate_limited class attribute if it doesn't exist
+    if not hasattr(_make_request, "rate_limited"):
+        _make_request.rate_limited = False
+    
+    # Add a cooling-off period if we've had rate limit errors recently
+    if _make_request.rate_limited:
+        # Add an extra delay if we've been rate limited recently
+        logger.info("Adding extra delay after recent rate limit error")
+        await asyncio.sleep(5)
+        _make_request.rate_limited = False
+    
     async with aiohttp.ClientSession() as session:
         # Log the query being sent (mask API key)
         log_params = params.copy()
@@ -89,6 +101,8 @@ async def _make_request(url: str, params: Dict) -> List[Dict]:
         async with session.get(url, params=params) as response:
             if response.status == 429:
                 logger.warning("Rate limit exceeded (429), retrying with backoff...")
+                # Mark that we've been rate limited for future calls
+                _make_request.rate_limited = True
                 response.raise_for_status()  # Trigger retry
                 
             if response.status >= 500:

@@ -224,10 +224,19 @@ class UnipileClient:
                 params={"direction": "sent", "limit": limit, "account_id": self.account_id}
             )
             
-            # Handle both dict with 'items' and direct list response formats
-            if isinstance(response_data, dict) and "items" in response_data and isinstance(response_data["items"], list):
-                items_list = response_data["items"]
-                logger.debug(f"Using 'items' list from dictionary response for /users/invitations")
+            items_list = []
+            if isinstance(response_data, dict):
+                if "items" in response_data and isinstance(response_data["items"], list):
+                    items_list = response_data["items"]
+                    logger.debug(f"Using 'items' list from dictionary response for /users/invitations")
+                # Check for the specific unexpected UserProfile response
+                elif response_data.get("object") == "UserProfile" and ("public_identifier" in response_data or "provider_id" in response_data):
+                    logger.error(f"Unexpected UserProfile object returned from /users/invitations. This may indicate an API issue or misconfiguration if you expected a list of invitations. Response: {str(response_data)[:300]}")
+                    # Return empty list as this is not a list of invitations
+                    return []
+                else:
+                    logger.error(f"Expected dict with 'items' list from /users/invitations, but 'items' key is missing or not a list. Response: {str(response_data)[:200]}")
+                    return []
             elif isinstance(response_data, list):
                 items_list = response_data
                 logger.debug(f"Using direct list response for /users/invitations")

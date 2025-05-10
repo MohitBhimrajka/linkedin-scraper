@@ -75,12 +75,31 @@ st.markdown("""
 
 
 def optimize_query_with_gemini(query_text):
-    """Use Gemini API to optimize a search query."""
+    """Use Gemini API to optimize a search query into multiple variations."""
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     
     if not gemini_api_key:
         st.error("❌ GEMINI_API_KEY not found in environment variables")
-        return query_text
+        return [query_text]  # Return original query in a list
+    
+    # Implement a simple rate limiter for Gemini API
+    # Using a class attribute to track the last call time across function calls
+    if not hasattr(optimize_query_with_gemini, "last_call_time"):
+        optimize_query_with_gemini.last_call_time = 0
+    
+    # Minimum delay between calls (in seconds)
+    min_delay = 2.0
+    current_time = time.time()
+    time_since_last_call = current_time - optimize_query_with_gemini.last_call_time
+    
+    if time_since_last_call < min_delay:
+        # Need to wait to avoid rate limiting
+        sleep_time = min_delay - time_since_last_call
+        logger.info(f"Rate limiting Gemini API calls, sleeping for {sleep_time:.2f}s")
+        time.sleep(sleep_time)
+    
+    # Update last call time
+    optimize_query_with_gemini.last_call_time = time.time()
     
     client = genai.Client(api_key=gemini_api_key)
     model = "gemini-2.5-flash-preview-04-17"
@@ -88,12 +107,10 @@ def optimize_query_with_gemini(query_text):
     prompt = f"""
     You are a world-class expert in LinkedIn search optimization and Google dorking techniques, specializing in crafting highly precise search queries to find the exact LinkedIn profiles matching specific Ideal Customer Profile (ICP) criteria.
 
-    Your task is to transform the given "Original ICP criteria" into a HIGHLY TARGETED, OPTIMIZED Google search string that will produce extremely accurate results when used with a Google Custom Search Engine (CSE) configured to search within LinkedIn.
+    Your task is to transform the given "Original ICP criteria" into a JSON list of 3 to 5 DIVERSE but RELATED, HIGHLY TARGETED, OPTIMIZED Google search strings. Each string in the list will be used with a Google Custom Search Engine (CSE) configured to search within LinkedIn. The goal is to maximize the chances of finding relevant profiles by exploring different angles of the ICP.
 
-    **Advanced Optimization Guidelines:**
-
+    **Advanced Optimization Guidelines (apply to EACH generated query string):**
     1.  **Precision Over Recall:** Optimize for finding EXACTLY the right profiles, even if it means fewer results. It's better to find 10 perfect matches than 100 mediocre ones.
-    
     2.  **Advanced Google Search Operators:**
         * Use `AND` (often implicit, but explicit for clarity when needed)
         * Use `OR` with parentheses for alternatives: `("VP Sales" OR "Sales Director")`
@@ -102,7 +119,6 @@ def optimize_query_with_gemini(query_text):
         * Use wildcards sparingly: `"head * marketing"` 
         * Use AROUND(n) for proximity searches: `marketing AROUND(3) director`
         * For company targeting, use company name variations: `("Company A" OR "CompanyA" OR "Company-A")`
-    
     3.  **LinkedIn-Specific Keyword Optimization:**
         * **Job Titles:** Be comprehensive with exact titles AND functional equivalents
           * Example: `("Chief Revenue Officer" OR "CRO" OR "VP Sales" OR "Head of Revenue" OR "Revenue Leader")`
@@ -114,28 +130,35 @@ def optimize_query_with_gemini(query_text):
           * Example: `("San Francisco Bay Area" OR SF OR "Bay Area" OR Oakland OR Berkeley OR "Silicon Valley" OR SV)`
         * **Company Size/Stage:** Use terms professionals use in profiles
           * Example: `("Series B" OR "Series C" OR "growth stage" OR scale-up OR scaleup OR "high growth")`
-    
     4.  **Logical Structure:** Use nested parentheses to create a clear logical structure, with most important criteria first.
-       
     5.  **Balance AND/OR Logic:** Make sure your query combines broad enough terms to find good matches while being specific enough to exclude irrelevant profiles.
 
     **Output Requirements:**
-    * Return ONLY the optimized search query as a single, continuous string.
-    * Do NOT include explanations, labels, or any text before/after the search string.
+    * Return ONLY a valid JSON array of strings. Each string in the array is an optimized search query.
+    * Example: `["query one", "query two", "query three"]`
+    * Do NOT include explanations, labels, or any text before/after the JSON array.
     * Do NOT include site:linkedin.com/in/ as the CSE is already configured to search only within LinkedIn.
 
-    **Examples of Excellent Optimized Queries:**
+    **Examples of Excellent Optimized Query Lists:**
     
     ORIGINAL: "Product managers at enterprise SaaS companies in Boston"
-    OPTIMIZED: ("product manager" OR "product management" OR "product owner" OR "senior product manager") ("enterprise software" OR "B2B SaaS" OR SaaS OR "software as a service") (Boston OR "greater boston area" OR massachusetts OR MA) -intern -junior -associate
+    OPTIMIZED_JSON_LIST: [
+        "(\\"product manager\\" OR \\"product owner\\") AND (\\"enterprise software\\" OR \\"B2B SaaS\\") AND (Boston OR \\"MA\\") -junior",
+        "(\\"senior product manager\\" OR \\"group product manager\\") AND SaaS AND (\\"Boston Area\\" OR \\"Cambridge MA\\") -intern -associate",
+        "(\\"head of product\\" OR \\"product lead\\") AND (\\"enterprise SaaS\\" OR \\"cloud software\\") AND (Massachusetts OR \\"New England\\") -consultant"
+    ]
     
     ORIGINAL: "Finance executives at Series B startups in Europe"
-    OPTIMIZED: ("CFO" OR "Chief Financial Officer" OR "VP Finance" OR "Head of Finance" OR "Finance Director") ("Series B" OR "Series C" OR "growth stage" OR "venture backed" OR "venture funded") ("Europe" OR "European Union" OR EU OR London OR Paris OR Berlin OR Amsterdam OR Madrid OR "Nordic" OR DACH)
+    OPTIMIZED_JSON_LIST: [
+        "(\\"CFO\\" OR \\"Chief Financial Officer\\" OR \\"VP Finance\\" OR \\"Head of Finance\\" OR \\"Finance Director\\") AND (\\"Series B\\" OR \\"Series C\\" OR \\"growth stage\\" OR \\"venture backed\\" OR \\"venture funded\\") AND (\\"Europe\\" OR \\"European Union\\" OR EU OR London OR Paris OR Berlin OR Amsterdam OR Madrid OR \\"Nordic\\" OR DACH)",
+        "(\\"Finance Executive\\" OR \\"Finance Leader\\") AND (startup OR scaleup) AND (UK OR Germany OR France OR Netherlands OR Spain) AND (fintech OR \\"financial services\\") -analyst",
+        "(\\"Head of Finance\\" OR \\"Finance Director\\") AND (\\"venture capital\\" OR \\"private equity backed\\") AND (Europe) AND (B2B OR B2C)"
+    ]
 
     Original ICP criteria:
     {query_text}
 
-    Optimized Google Search String for LinkedIn:
+    Optimized Google Search String List (JSON Array of 3-5 diverse queries):
     """
     
     contents = [
@@ -146,7 +169,7 @@ def optimize_query_with_gemini(query_text):
     ]
     
     generate_content_config = types.GenerateContentConfig(
-        response_mime_type="text/plain",
+        response_mime_type="text/plain",  # Expecting JSON text
     )
     
     try:
@@ -193,40 +216,47 @@ async def run_scraper(optimized_icps, limit):
         st.error(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
         return None, optimized_icps
     
-    # Extract optimized queries
-    queries = [icp["optimized"] for icp in optimized_icps]
-    logger.info(f"Starting LinkedIn profile collection with {len(queries)} ICPs (limit: {limit})")
+    # Extract original ICP queries (not optimized yet)
+    original_queries = [icp["original"] for icp in optimized_icps]
+    logger.info(f"Starting LinkedIn profile collection with {len(original_queries)} ICPs (limit: {limit})")
     
     # Create Batcher for rate limiting and parallelism
-    batcher = Batcher(max_in_flight=10, delay=2)
+    batcher = Batcher(max_in_flight=5, delay=3)
     
-    # Process each ICP criteria
+    # Process each ICP criteria concurrently using the enhanced function
     all_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i, query in enumerate(queries):
-        original_icp = optimized_icps[i]["original"]
-        optimized_icp = query
-        
-        status_text.text(f"Processing ICP {i+1}/{len(queries)}: {original_icp[:50]}...")
-        query_results = await process_query(query, limit, batcher)
-        
-        # Save results by ICP
-        result_count = len(query_results)
-        optimized_icps[i]["result_count"] = result_count
-        optimized_icps[i]["results"] = query_results
-        
-        all_results.extend(query_results)
-        logger.info(f"Completed ICP search with {result_count} results")
-        progress_bar.progress((i + 1) / len(queries))
+    # Process all ICPs with query variations
+    all_icp_data = await _process_all_icps_concurrently(
+        original_queries, 
+        limit, 
+        batcher, 
+        progress_bar, 
+        status_text
+    )
+    
+    # Process and collect all results from all variations
+    for icp_data in all_icp_data:
+        all_results.extend(icp_data["results"])
+    
+    # Update optimized_icps with the new data structure from _process_all_icps_concurrently
+    for i, icp_data in enumerate(all_icp_data):
+        optimized_icps[i] = {
+            "original": icp_data["original"],
+            "optimized": icp_data["optimized_variations"][0] if icp_data["optimized_variations"] else icp_data["original"],  # Use first variation as primary
+            "optimized_variations": icp_data["optimized_variations"],
+            "results": icp_data["results"],
+            "result_count": icp_data["result_count"]
+        }
     
     # Normalize and deduplicate results
     unique_profiles = normalize_results(all_results)
     
     # Append to Google Sheets - both to main sheet and individual ICP sheets
     if unique_profiles:
-        logger.info(f"Appending {len(unique_profiles)} profiles to Google Sheets")
+        logger.info(f"Appending {len(unique_profiles)} profiles to Google Sheets...")
         status_text.text(f"Appending {len(unique_profiles)} profiles to Google Sheets...")
         
         # Append to main sheet
@@ -471,54 +501,99 @@ def _determine_next_action(connection_state, contact_status, connection_actions,
     return "Generate messages"
 
 
-# Create an async function to process all ICPs concurrently
 async def _process_all_icps_concurrently(queries_to_process, limit_per_icp, batcher_instance, st_progress_bar, st_progress_text):
-    all_optimized_icps_data = []
-    optimization_step_weight = 0.2  # 20% of progress for optimization
-    processing_step_weight = 0.8    # 80% of progress for fetching
+    """
+    Process multiple ICPs in parallel with support for multiple query variations per ICP.
+    
+    Args:
+        queries_to_process: List of original ICP query strings
+        limit_per_icp: Max number of profiles to fetch per ICP query variation
+        batcher_instance: BatchRequestManager instance
+        st_progress_bar: Streamlit progress bar
+        st_progress_text: Streamlit text element for status updates
+        
+    Returns:
+        List of dictionaries with original and optimized ICPs along with results
+    """
+    all_optimized_icps_data = [] # This will be returned
+    optimization_step_weight = 0.1  # 10% for optimization
+    processing_step_weight = 0.9    # 90% for fetching
 
-    num_queries = len(queries_to_process)
+    num_original_icps = len(queries_to_process)
 
-    # Step 1: Optimize all queries (synchronous, but can be batched if Gemini API were async)
-    optimized_query_details = []
+    # Step 1: Optimize all original ICPs to get lists of query variations
+    optimized_query_collections = []
     for i, original_query_text in enumerate(queries_to_process):
-        st_progress_text.text(f"Optimizing ICP #{i+1}/{num_queries}...")
-        optimized_text = optimize_query_with_gemini(original_query_text)  # This is a sync call
-        optimized_query_details.append({
+        st_progress_text.text(f"Optimizing ICP #{i+1}/{num_original_icps}...")
+        # optimize_query_with_gemini now returns a list of query strings
+        optimized_variations_list = optimize_query_with_gemini(original_query_text)
+        
+        # Limit the number of variations to 3 to reduce API load
+        if len(optimized_variations_list) > 3:
+            logger.info(f"Limiting query variations from {len(optimized_variations_list)} to 3 to reduce API load")
+            optimized_variations_list = optimized_variations_list[:3]
+        
+        optimized_query_collections.append({
             "original": original_query_text,
-            "optimized": optimized_text,
-            "results": [],  # Placeholder
+            "optimized_variations": optimized_variations_list, # List of query strings
+            "results": [],  # Placeholder for aggregated results for this original ICP
             "result_count": 0  # Placeholder
         })
-        st_progress_bar.progress(((i + 1) / num_queries) * optimization_step_weight)
+        st_progress_bar.progress(((i + 1) / num_original_icps) * optimization_step_weight)
     
-    # Step 2: Create coroutines for fetching profiles for each optimized query
+    # Step 2 & 3: Create and run fetch_profile tasks for EACH optimized query variation
     fetch_tasks = []
-    for i, detail in enumerate(optimized_query_details):
-        st_progress_text.text(f"Preparing to fetch for ICP #{i+1}/{num_queries}: {detail['original'][:50]}...")
-        # process_query is an async function
-        fetch_tasks.append(process_query(detail['optimized'], limit=limit_per_icp, batcher=batcher_instance))
+    # Keep track of which original ICP each task belongs to, and which variation it is
+    task_to_icp_map = [] 
 
-    # Step 3: Run all fetch_profile tasks concurrently
-    all_query_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+    for icp_idx, collection_detail in enumerate(optimized_query_collections):
+        original_icp_text = collection_detail["original"]
+        variations = collection_detail["optimized_variations"]
+        for variation_idx, optimized_variation_text in enumerate(variations):
+            st_progress_text.text(f"Preparing fetch for ICP #{icp_idx+1} (Var. {variation_idx+1}/{len(variations)}): {original_icp_text[:30]}...")
+            fetch_tasks.append(
+                process_query(optimized_variation_text, limit=limit_per_icp, batcher=batcher_instance)
+            )
+            task_to_icp_map.append({"icp_idx": icp_idx, "variation_text": optimized_variation_text})
+            # Add a small delay between creating tasks to prevent overwhelming the API
+            await asyncio.sleep(0.5)
 
-    # Step 4: Collate results
+    # Run all fetch_tasks concurrently
+    all_variation_results_raw = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    # Step 4: Collate results back to their original ICPs
+    # Initialize/reset results list for each original ICP in optimized_query_collections
+    for collection_detail in optimized_query_collections:
+        collection_detail["results"] = [] 
+
     current_progress = optimization_step_weight
-    for i, result_or_exception in enumerate(all_query_results):
-        detail = optimized_query_details[i]
-        if isinstance(result_or_exception, Exception):
-            st.error(f"Error processing optimized ICP '{detail['optimized'][:50]}...': {str(result_or_exception)}")
-            logger.error(f"Exception during process_query for '{detail['optimized']}': {result_or_exception}")
-            detail["results"] = []
-            detail["result_count"] = 0
-        else:
-            detail["results"] = result_or_exception
-            detail["result_count"] = len(result_or_exception)
+    num_total_fetch_tasks = len(fetch_tasks)
+
+    for task_idx, result_or_exception in enumerate(all_variation_results_raw):
+        map_info = task_to_icp_map[task_idx]
+        original_icp_idx = map_info["icp_idx"]
+        variation_text = map_info["variation_text"] # For logging
         
-        all_optimized_icps_data.append(detail)
-        current_progress += (1/num_queries) * processing_step_weight
-        st_progress_bar.progress(min(current_progress, 1.0))  # Cap progress at 1.0
-        st_progress_text.text(f"Fetched data for ICP #{i+1}/{num_queries}. Found {detail['result_count']} profiles.")
+        # Get the collection_detail for the original ICP this result belongs to
+        collection_detail_for_this_result = optimized_query_collections[original_icp_idx]
+
+        if isinstance(result_or_exception, Exception):
+            st.error(f"Error processing variation '{variation_text[:50]}...' for ICP '{collection_detail_for_this_result['original'][:30]}...': {str(result_or_exception)}")
+            logger.error(f"Exception during process_query for variation '{variation_text}' of ICP '{collection_detail_for_this_result['original']}': {result_or_exception}")
+        else:
+            # result_or_exception is a list of profile dicts from one call to process_query
+            collection_detail_for_this_result["results"].extend(result_or_exception) # Accumulate results
+        
+        current_progress += (1 / num_total_fetch_tasks) * processing_step_weight if num_total_fetch_tasks > 0 else 0
+        st_progress_bar.progress(min(current_progress, 1.0))
+        st_progress_text.text(f"Processed fetch task {task_idx+1}/{num_total_fetch_tasks}. Aggregating results...")
+        
+    # After all variations are processed, update the final result_count for each original ICP
+    # The results are already aggregated in collection_detail["results"]
+    for i, final_detail in enumerate(optimized_query_collections):
+        final_detail["result_count"] = len(final_detail["results"])
+        all_optimized_icps_data.append(final_detail) # This is what the function returns
+        st_progress_text.text(f"ICP #{i+1}/{num_original_icps} ('{final_detail['original'][:30]}...') aggregated {final_detail['result_count']} raw profiles from all its variations.")
         
     return all_optimized_icps_data
 
@@ -845,7 +920,7 @@ def main():
                 queries = st.session_state.queries
                 progress_text.text(f"Preparing to process {len(queries)} ICPs (max {limit} results each)...")
                 
-                batcher = Batcher(max_in_flight=5, delay=2)  # Create Batcher once
+                batcher = Batcher(max_in_flight=5, delay=3)  # Create Batcher once
                 
                 # Run all async tasks together
                 all_optimized_icps = asyncio.run(
@@ -1052,31 +1127,53 @@ def main():
                                 
                                 # Look for this profile in unipile data
                                 current_state = None
+                                provider_id_found = False
+                                
+                                # Method 1: Direct provider_id match - most reliable 
                                 if provider_id and provider_id in unipile_relations_map:
                                     current_state = unipile_relations_map.get(provider_id)
+                                    provider_id_found = True
                                 
-                                if not current_state:
-                                    # Try to match by extracted identifier
+                                # Method 2: Try to match by extracted identifier in provider_ids
+                                if not current_state and ident:
                                     for pid, state in unipile_relations_map.items():
                                         if ident in pid:
                                             current_state = state
                                             # Since we found a match, update the row with the provider_id
                                             row['Provider ID'] = pid
+                                            provider_id_found = True
                                             break
                                 
                                 # Check if this profile has a pending invitation
                                 has_pending_invite = False
+                                
+                                # Method 1: Direct provider_id match for invites
                                 if provider_id and provider_id in unipile_invites_map:
                                     has_pending_invite = True
+                                    provider_id_found = True
                                     
-                                if not has_pending_invite and not current_state:
-                                    # Try to match in invites by identifier
+                                # Method 2: Try to match invitation by identifier
+                                if not has_pending_invite and ident:
                                     for pid in unipile_invites_map:
                                         if ident in pid:
                                             has_pending_invite = True
                                             # Update provider_id
                                             row['Provider ID'] = pid
+                                            provider_id_found = True
                                             break
+                                
+                                # Method 3: Check Master_Profiles for provider_id if not already found
+                                if not provider_id_found and 'Provider ID' in master_data and master_data['Provider ID']:
+                                    master_provider_id = master_data['Provider ID']
+                                    row['Provider ID'] = master_provider_id
+                                    
+                                    # Check if this provider_id is in our relations or invites maps
+                                    if master_provider_id in unipile_relations_map:
+                                        current_state = unipile_relations_map[master_provider_id]
+                                        provider_id_found = True
+                                    elif master_provider_id in unipile_invites_map:
+                                        has_pending_invite = True
+                                        provider_id_found = True
                                 
                                 # If still no current state from Unipile, use Master_Profiles
                                 if not current_state:
@@ -1211,7 +1308,7 @@ def main():
                         expected_columns = [
                             "LinkedIn URL", "First Name", "Last Name", "Title", "Company", "Location", 
                             "Connection Msg", "Comment Msg", "FU-1", "FU-2", "FU-3",
-                            "Connection State", "Contact Status", "Recommended Action"
+                            "Provider ID", "Connection State", "Contact Status", "Recommended Action"
                         ]
                         
                         for col in expected_columns:
@@ -1236,6 +1333,7 @@ def main():
                                 "FU-1": st.column_config.TextColumn("Follow-up 1", width="large"),
                                 "FU-2": st.column_config.TextColumn("Follow-up 2", width="large"),
                                 "FU-3": st.column_config.TextColumn("Follow-up 3", width="large"),
+                                "Provider ID": st.column_config.TextColumn("Provider ID", disabled=True),
                                 "Connection State": st.column_config.TextColumn("Connection State", disabled=True),
                                 "Contact Status": st.column_config.TextColumn("Contact Status", disabled=True),
                                 "Recommended Action": st.column_config.TextColumn("Recommended Action", disabled=True),

@@ -27,6 +27,7 @@ class Profile(BaseModel):
     inmail: Optional[str] = ""  # InMail message
     location: Optional[str] = None
     company: Optional[str] = None
+    provider_id: Optional[str] = None  # Unipile provider ID
 
 
 def normalize_results(raw_items: List[Dict]) -> List[Profile]:
