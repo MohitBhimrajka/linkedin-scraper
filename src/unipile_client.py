@@ -20,8 +20,17 @@ class UnipileClient:
 
     async def _request(self, method:str, path:str, **kw)->Any:
         url = f"{self.base}{path}"
-        if "params" not in kw: kw["params"]={}
-        kw["params"].setdefault("account_id", self.account_id)
+        
+        # Only add account_id to query params for GET requests
+        # For POST/PUT, it should be in the JSON body if needed
+        if method.upper() == "GET":
+            if "params" not in kw: kw["params"] = {}
+            kw["params"].setdefault("account_id", self.account_id)
+        elif "json" in kw and isinstance(kw["json"], dict) and "account_id" not in kw["json"]:
+            # For POST requests with JSON body, add account_id to the body if it's not already there
+            # and if the endpoint isn't already including it in the path
+            if not path.startswith("/profiles/") and not path.startswith("/posts/"):
+                kw["json"]["account_id"] = self.account_id
 
         @tenacity.retry(stop=tenacity.stop_after_attempt(3),
                         wait=tenacity.wait_exponential(multiplier=1, min=2, max=8),
@@ -55,4 +64,17 @@ class UnipileClient:
 
     async def send_inmail(self, profile_id:str, subject:str, body:str)->Dict:
         return await self._request("POST","/inmails", json={
-            "recipient_id": profile_id, "subject": subject, "body": body}) 
+            "recipient_id": profile_id, "subject": subject, "body": body})
+            
+    async def close(self):
+        """Close the HTTP client session."""
+        if self.session:
+            await self.session.aclose()
+            
+    async def __aenter__(self):
+        """Support using with async with."""
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Close client when exiting context."""
+        await self.close() 

@@ -902,34 +902,115 @@ Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europ
         spreadsheet = get_spreadsheet(sheet_id)
         sheet_titles = [ws.title for ws in spreadsheet.worksheets() if ws.title not in ("Master_Sheet","Main Results")]
 
-        selected_sheets = st.multiselect("Select ICP sheets to target", sheet_titles)
-        follow1 = st.number_input("Days until follow‑up 1", 1, 30, 3)
-        follow2 = st.number_input("Days until follow‑up 2", 1, 60, 7)
-        follow3 = st.number_input("Days until follow‑up 3", 1, 90, 14)
-
-        if st.button("▶️ Launch Campaign", type="primary"):
-            # load rows from Sheets -> Profile objs
-            from src.transform import Profile
-            targets=[]
-            for name in selected_sheets:
-                ws = spreadsheet.worksheet(name)
-                data = ws.get_all_records()
-                for row in data:
-                    targets.append(Profile(
-                        linkedin_url=row["LinkedIn URL"],
-                        title=row["Title"],
-                        first_name=row["First Name"],
-                        last_name=row["Last Name"],
-                        description=row["Description"],
-                        profile_image_url=row["Profile Image URL"]
-                    ))
-            if targets:
-                import asyncio
-                from src.campaign import run_campaign
-                stats = asyncio.run(run_campaign(targets, (follow1,follow2,follow3)))
-                st.success(f"Invitations sent: {stats.sent}, errors: {stats.errors}")
+        # Sheet selection
+        selected_sheet = st.selectbox("Select ICP sheet to target", sheet_titles)
+        
+        if selected_sheet:
+            # Campaign mode selection
+            mode = st.radio(
+                "What should happen?", 
+                ["Generate only", "Invite only", "Invite + Comment", "Full (invite, comment, follow-ups, InMail)"],
+                help="Generate: just create messages, Invite: send connection requests, Full: all actions"
+            )
+            
+            # Follow-up configuration
+            st.subheader("Follow-up Timing")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                follow1 = st.number_input("Days until follow‑up 1", 1, 30, 3)
+            with col2:
+                follow2 = st.number_input("Days until follow‑up 2", 1, 60, 7)
+            with col3:
+                follow3 = st.number_input("Days until follow‑up 3", 1, 90, 14)
+            
+            # Load profiles from selected sheet
+            ws = spreadsheet.worksheet(selected_sheet)
+            data = ws.get_all_records()
+            
+            # Create DataFrame for display and selection
+            import pandas as pd
+            df = pd.DataFrame(data)
+            
+            if not df.empty:
+                # Preview profiles
+                st.subheader("Profile Preview")
+                st.dataframe(df[["LinkedIn URL", "Title", "First Name", "Last Name"]], use_container_width=True)
+                
+                # Profile selection
+                selected_indices = st.multiselect(
+                    "Preview & choose specific profiles",
+                    options=list(range(len(df))),
+                    format_func=lambda i: f"{df.iloc[i]['First Name']} {df.iloc[i]['Last Name']} - {df.iloc[i]['Title']}"
+                )
+                
+                # Limit setting
+                max_sends = len(selected_indices) if selected_indices else len(df)
+                limit = st.number_input("Maximum profiles to process in this run", 1, max_sends, min(10, max_sends))
+                
+                # Launch button
+                if st.button("▶️ Launch Campaign", type="primary"):
+                    from src.transform import Profile
+                    
+                    # Create targets list from selected rows or all rows
+                    targets = []
+                    
+                    if selected_indices:
+                        # Use only selected rows
+                        for i in selected_indices[:limit]:
+                            row = df.iloc[i]
+                            targets.append(Profile(
+                                linkedin_url=row["LinkedIn URL"],
+                                title=row["Title"],
+                                first_name=row["First Name"],
+                                last_name=row["Last Name"],
+                                description=row["Description"],
+                                profile_image_url=row["Profile Image URL"]
+                            ))
+                    else:
+                        # Use all rows up to limit
+                        for i, row in df.head(limit).iterrows():
+                            targets.append(Profile(
+                                linkedin_url=row["LinkedIn URL"],
+                                title=row["Title"],
+                                first_name=row["First Name"],
+                                last_name=row["Last Name"],
+                                description=row["Description"],
+                                profile_image_url=row["Profile Image URL"]
+                            ))
+                    
+                    if targets:
+                        import asyncio
+                        from src.campaign import run_campaign
+                        
+                        # Show progress
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        status_text.text("Starting campaign...")
+                        
+                        # Run campaign with selected mode
+                        stats = asyncio.run(run_campaign(
+                            profiles=targets, 
+                            followup_days=(follow1, follow2, follow3),
+                            mode=mode.split(" ")[0],  # Extract just the first word (Generate, Invite, Full)
+                            spreadsheet_id=sheet_id,
+                            sheet_name=selected_sheet
+                        ))
+                        
+                        progress_bar.progress(1.0)
+                        
+                        # Show results based on mode
+                        if mode.startswith("Generate"):
+                            st.success(f"✅ Generated messages for {stats.generated} profiles. Check the sheet for results.")
+                        else:
+                            st.success(f"✅ Campaign completed! Generated: {stats.generated}, Sent: {stats.sent}, Errors: {stats.errors}")
+                            
+                        # Add a link to the sheet
+                        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={ws.id}"
+                        st.markdown(f"[View updated profiles in Google Sheets]({sheet_url})")
+                    else:
+                        st.warning("No profiles selected to process!")
             else:
-                st.warning("Nothing to send!")
+                st.warning(f"The selected sheet '{selected_sheet}' has no data.")
 
 
 if __name__ == "__main__":

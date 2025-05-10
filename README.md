@@ -23,7 +23,7 @@ A Python application that uses Google Custom Search to find LinkedIn profiles ma
 2. Copy **API Key**, **DSN**, and **LinkedIn Account ID**  
 3. Add them to `.env` (`UNIPILE_API_KEY`, `UNIPILE_DSN`, `UNIPILE_ACCOUNT_ID`)
 
-3. Create a `.env` file with your credentials (see `.env.example`)
+Create a `.env` file with your credentials (see `.env.example`)
 
 ## Environment Variables
 
@@ -91,14 +91,28 @@ The results are stored in Google Sheets with the following columns:
 Once you've collected LinkedIn profiles, you can run automated outreach campaigns:
 
 1. Navigate to the Campaign tab in the Streamlit app
-2. Select which ICP sheets (target audiences) to include
-3. Configure follow-up timing (1st, 2nd, and 3rd follow-up messages)
-4. Click "Launch Campaign" to begin outreach
+2. Select an ICP sheet (target audience) to work with
+3. Choose the campaign mode:
+   - **Generate only**: Create personalized messages without sending anything
+   - **Invite only**: Send connection requests without commenting
+   - **Invite + Comment**: Send connections and comment on recent posts
+   - **Full**: Send connections, comments, and prepare follow-up messages
+4. Configure follow-up timing (1st, 2nd, and 3rd follow-up messages)
+5. Preview and select specific profiles to target
+6. Set the maximum number of profiles to process in this run
+7. Click "Launch Campaign" to begin outreach
 
 The campaign will:
 - Enrich each LinkedIn profile with additional data
 - Generate personalized connection messages using Gemini AI
-- Send connection requests with custom messages
-- Comment on recent posts (if available)
-- Schedule follow-up messages to be sent automatically after connections are accepted
-- Track progress in the Google Sheet
+- Send connection requests with custom messages (if not in Generate only mode)
+- Comment on recent posts if available (in Invite + Comment or Full modes)
+- Store follow-up messages in the sheet for future use
+- Track progress in the Google Sheet with detailed status updates
+
+The sheet's "Contact Status" column tracks the progress of each profile:
+- GENERATED: Messages created but not sent
+- INVITED: Connection request sent
+- COMMENTED: Comment posted on a recent post
+- FOLLOW-UPS READY: Follow-up messages prepared for future sending
+- ERROR: An error occurred during processing

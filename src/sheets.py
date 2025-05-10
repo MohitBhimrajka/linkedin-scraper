@@ -306,6 +306,45 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 try:
                     # Get the current row count
                     all_values = worksheet.get_all_values()
+                    
+                    # Check if we need to upgrade headers from old format (6 columns) to new format (14 columns)
+                    if all_values and len(all_values[0]) < 14:
+                        logger.info(f"Upgrading worksheet {unique_sheet_name} from {len(all_values[0])} to 14 columns")
+                        
+                        # Define the full set of headers
+                        headers = [
+                            "LinkedIn URL", 
+                            "Title", 
+                            "First Name", 
+                            "Last Name", 
+                            "Description", 
+                            "Profile Image URL",
+                            "Connection Msg",
+                            "Comment Msg",
+                            "F/U‑1",
+                            "F/U‑2",
+                            "F/U‑3",
+                            "InMail",
+                            "Contact Status",
+                            "Last Action UTC"
+                        ]
+                        
+                        # Update headers
+                        worksheet.update("A1:N1", [headers])
+                        
+                        # Format headers
+                        worksheet.format("A1:N1", {
+                            "textFormat": {"bold": True},
+                            "horizontalAlignment": "CENTER",
+                            "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
+                        })
+                        
+                        # Auto-resize columns
+                        try:
+                            worksheet.columns_auto_resize(0, 13)  # Resize columns A-N
+                        except Exception as resize_error:
+                            logger.warning(f"Failed to auto-resize columns: {str(resize_error)}")
+                    
                     if len(all_values) > 1:  # If there are rows beyond the header
                         # Clear everything after row 1
                         worksheet.batch_clear([f"A2:Z{len(all_values)}"])
