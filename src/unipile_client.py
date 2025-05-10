@@ -60,21 +60,29 @@ class UnipileClient:
             params={"account_id": self.account_id, "limit": limit}
         )
 
-    async def send_invitation(self, provider_id:str, message:str)->Dict:
+    async def send_invitation(self, provider_id:str, message:str, send_at:Optional[str]=None)->Dict:
         """Send a connection invitation to a LinkedIn profile"""
         body = {
             "provider_id": provider_id,
             "account_id": self.account_id,
             "message": message
         }
+        if send_at:
+            body["send_at"] = send_at
         return await self._request("POST", "/users/invite", json=body)
 
-    async def comment_post(self, post_id:str, message:str)->Dict:
+    async def comment_post(self, post_id:str, message:str, send_at:Optional[str]=None)->Dict:
         """Comment on a LinkedIn post"""
+        body = {
+            "account_id": self.account_id, 
+            "text": message
+        }
+        if send_at:
+            body["send_at"] = send_at
         return await self._request(
             "POST", 
             f"/posts/{post_id}/comment",
-            json={"account_id": self.account_id, "text": message}
+            json=body
         )
 
     async def send_message(self, conversation_id:str, message:str, send_at:Optional[str]=None)->Dict:
@@ -95,6 +103,27 @@ class UnipileClient:
             "body": body,
             "account_id": self.account_id
         })
+    
+    async def list_sent_invitations(self, limit:int=500)->List[Dict]:
+        """Get list of sent invitations and their statuses"""
+        return await self._request(
+            "GET", "/linkinvitations",
+            params={"direction": "sent", "limit": limit, "account_id": self.account_id}
+        )
+
+    async def list_relations(self, limit:int=1000)->List[Dict]:
+        """Get list of all relations and their connection states"""
+        return await self._request(
+            "GET", "/relations",
+            params={"limit": limit, "account_id": self.account_id}
+        )
+
+    async def list_conversations(self, limit:int=500)->List[Dict]:
+        """Get list of conversations with unread counts and last message timestamps"""
+        return await self._request(
+            "GET", "/conversations",
+            params={"limit": limit, "account_id": self.account_id}
+        )
             
     async def close(self):
         """Close the HTTP client session."""

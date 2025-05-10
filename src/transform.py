@@ -15,6 +15,7 @@ class Profile(BaseModel):
     last_name: Optional[str] = None
     description: Optional[str] = None
     profile_image_url: Optional[str] = None
+    followers_count: Optional[int] = 0  # Added followers count field
 
 
 def normalize_results(raw_items: List[Dict]) -> List[Profile]:
@@ -94,7 +95,8 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         first_name=name_parts["first_name"],
         last_name=name_parts["last_name"],
         description=description,
-        profile_image_url=profile_image_url
+        profile_image_url=profile_image_url,
+        followers_count=0  # Initialize to 0, will be updated with real data if available
     )
 
 

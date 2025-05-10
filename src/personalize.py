@@ -39,6 +39,7 @@ Your task is to craft hyper-personalized messages that demonstrate you've genuin
    - Respond to the SPECIFIC CONTENT they posted with thoughtful insight
    - Add valuable perspective, relevant experience, or a thought-provoking question
    - Avoid generic praise like "Great post!" - be substantive
+   - If no post is available, reference their profile headline/background instead
 
 5. FOLLOW-UP STRATEGY:
    - Each follow-up should provide NEW value or perspective (industry insights, relevant resources)
@@ -48,14 +49,14 @@ Your task is to craft hyper-personalized messages that demonstrate you've genuin
 
 6. FORMAT REQUIREMENTS:
    - Connection request: Conversational, genuinely interesting, max 120 chars
-   - Comment: Thoughtful response to their content, adding value
+   - Comment: Thoughtful response (if no post, reference profile headline)
    - Follow-ups: Three distinct messages that build relationship
    - InMail: Professional but warm, clear value proposition
 
 You MUST return a valid JSON object with EXACTLY these keys:
 {{{{
  "connection": "<120‑char hyper-personalized connection request>",
- "comment": "<substantive, thoughtful reply to recent post or empty if no post>",
+ "comment": "<substantive reply (if no post, reference profile headline)>",
  "followups": ["<value-adding follow-up 1>", "<relationship-building follow-up 2>", "<action-oriented follow-up 3>"],
  "inmail_subject": "<personalized, attention-grabbing subject>",
  "inmail_body": "<personalized message up to 500 chars>"
@@ -90,7 +91,8 @@ def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
         "current_role": headline,
         "skills": profile_data.get("skills", []),
         "company": company,
-        "provider_id": profile_data.get("provider_id", "")  # Store the provider_id for reference
+        "provider_id": profile_data.get("provider_id", ""),  # Store the provider_id for reference
+        "followers_count": profile_data.get("followers_count", profile_data.get("followersCount", 0))  # Include follower count
     }
     
     # Create well-formatted JSON for the prompt
@@ -141,7 +143,7 @@ def craft_messages(profile_data:Dict, recent_post:str="") -> Dict:
     # Fallback response if all attempts fail but don't raise an exception
     return {
         "connection": f"Noticed your work in {industry or 'your industry'}. I'm exploring similar challenges - would love to connect!",
-        "comment": "Insightful perspective! I've been thinking about this topic recently and appreciate your take.",
+        "comment": f"Really enjoyed reading about your work in {headline.split('|')[0].strip() if headline else 'your field'}! The approach you're taking is inspiring.",
         "followups": [
             "Hope you're having a great week! Wanted to share this article that relates to your recent post.",
             "Just came across this resource that might interest you given your background.",

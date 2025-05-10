@@ -1,13 +1,14 @@
 #!/bin/bash
 
-# Script to fix the .env file by removing inline comments
+# Script to fix the .env file by removing inline comments and trailing spaces
 # Created to fix the issue with UNIPILE_DSN
 
 # Backup the original file
 cp .env .env.backup
 
 # Process the file and fix the UNIPILE_DSN line
-cat .env | sed 's/UNIPILE_DSN=\(.*\)#.*/UNIPILE_DSN=\1/' > .env.fixed
+# First remove inline comments, then trim trailing spaces
+cat .env | sed 's/UNIPILE_DSN=\(.*\)#.*/UNIPILE_DSN=\1/' | sed 's/UNIPILE_DSN=\(.*[^ ]\) */UNIPILE_DSN=\1/' > .env.fixed
 
 # Check if the processing completed successfully
 if [ $? -eq 0 ]; then
@@ -16,7 +17,7 @@ if [ $? -eq 0 ]; then
     chmod 600 .env  # Set proper permissions
     echo "✅ .env file has been fixed successfully."
     echo "Original file was backed up as .env.backup"
-    echo "UNIPILE_DSN now contains only the value with no comments."
+    echo "UNIPILE_DSN now contains only the value with no comments or trailing spaces."
 else
     echo "❌ Error occurred while trying to fix the .env file."
     echo "Please check the file and modify it manually."

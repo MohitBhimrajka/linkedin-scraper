@@ -307,9 +307,9 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     # Get the current row count
                     all_values = worksheet.get_all_values()
                     
-                    # Check if we need to upgrade headers from old format (6 columns) to new format (14 columns)
-                    if all_values and len(all_values[0]) < 14:
-                        logger.info(f"Upgrading worksheet {unique_sheet_name} from {len(all_values[0])} to 14 columns")
+                    # Check if we need to upgrade headers to new format with status columns
+                    if all_values and len(all_values[0]) < 19:
+                        logger.info(f"Upgrading worksheet {unique_sheet_name} from {len(all_values[0])} to 19 columns")
                         
                         # Define the full set of headers
                         headers = [
@@ -327,14 +327,20 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             "InMail",
                             "Contact Status",
                             "Last Action UTC",
-                            "Error Msg"
+                            "Error Msg",
+                            # New relationship state columns
+                            "Invite ID",
+                            "Connection State",
+                            "Follower Cnt",
+                            "Unread Cnt",
+                            "Last Msg UTC"
                         ]
                         
-                        # Update headers
-                        worksheet.update("A1:O1", [headers])
+                        # Update headers (A-S = 19 columns)
+                        worksheet.update("A1:S1", [headers])
                         
                         # Format headers
-                        worksheet.format("A1:O1", {
+                        worksheet.format("A1:S1", {
                             "textFormat": {"bold": True},
                             "horizontalAlignment": "CENTER",
                             "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -342,7 +348,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                         
                         # Auto-resize columns
                         try:
-                            worksheet.columns_auto_resize(0, 14)  # Resize columns A-O
+                            worksheet.columns_auto_resize(0, 18)  # Resize columns A-S (0-18)
                         except Exception as resize_error:
                             logger.warning(f"Failed to auto-resize columns: {str(resize_error)}")
                     
@@ -375,12 +381,18 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "InMail",
                     "Contact Status",
                     "Last Action UTC",
-                    "Error Msg"
+                    "Error Msg",
+                    # New relationship state columns
+                    "Invite ID",
+                    "Connection State",
+                    "Follower Cnt",
+                    "Unread Cnt",
+                    "Last Msg UTC"
                 ]
                 worksheet.append_row(headers, value_input_option='RAW')
                 
                 # Format headers (make bold, freeze row, center alignment)
-                worksheet.format("A1:O1", {
+                worksheet.format("A1:S1", {
                     "textFormat": {"bold": True},
                     "horizontalAlignment": "CENTER",
                     "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -389,7 +401,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 
                 # Auto-resize columns to fit content - this replaces set_column_width
                 try:
-                    worksheet.columns_auto_resize(0, 14)  # Resize columns A-O
+                    worksheet.columns_auto_resize(0, 18)  # Resize columns A-S (0-18)
                 except Exception as e:
                     logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -455,7 +467,8 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             "",  # InMail
             "",  # Contact Status
             "",  # Last Action UTC
-            ""   # Error Msg
+            "",  # Error Msg
+            str(profile.followers_count) if profile.followers_count else ""  # Followers Count
         ])
     
     # Retry logic for append operations (in case of API rate limits)
@@ -484,7 +497,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
                             format_last_row = min(last_row, max_format_row)
                             
                             # Add formatting for better readability
-                            worksheet.format(f"A{first_new_row}:O{format_last_row}", {
+                            worksheet.format(f"A{first_new_row}:P{format_last_row}", {
                                 "wrapStrategy": "WRAP",  # Change from CLIP to WRAP
                                 "verticalAlignment": "TOP",
                                 "padding": {"top": 2, "bottom": 2}
@@ -494,7 +507,7 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             
             # Auto-resize columns after adding data
             try:
-                worksheet.columns_auto_resize(0, 14)  # Resize columns A-O
+                worksheet.columns_auto_resize(0, 15)  # Resize columns A-P (includes new column)
             except Exception as e:
                 logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 

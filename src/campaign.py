@@ -17,7 +17,8 @@ async def run_campaign(
     followup_days=(3,7,14), 
     mode="Full",
     spreadsheet_id: Optional[str] = None, 
-    sheet_name: Optional[str] = None
+    sheet_name: Optional[str] = None,
+    schedule_time: Optional[str] = None
 ) -> CampaignStats:
     """
     Run a LinkedIn outreach campaign on the specified profiles.
@@ -28,6 +29,7 @@ async def run_campaign(
         mode: Campaign mode - "Generate only", "Invite only", "Invite + Comment", or "Full"
         spreadsheet_id: Google Sheet ID where profiles are stored
         sheet_name: Sheet name where profiles are stored
+        schedule_time: Optional ISO-format datetime string to schedule message sending
     
     Returns:
         CampaignStats object with counts of actions taken
@@ -60,9 +62,36 @@ async def run_campaign(
             # Get the provider_id from the API response
             provider_id = pdata["provider_id"]  # Changed from 'id' to 'provider_id'
             
-            posts = await client.recent_posts(provider_id, limit=1) if mode != "Generate only" else []
+            # Always fetch posts to provide data for comments, regardless of mode
+            posts = await client.recent_posts(provider_id, limit=1)
             recent = posts[0]["text"] if posts else ""
+            
+            # Normalize follower count field for consistency
+            pdata["followers_count"] = pdata.get("followersCount", 0)
+            
+            # Store follower count in the profile object for sheets
+            p.followers_count = pdata["followers_count"]
+            
             msgs = craft_messages(pdata, recent)
+            
+            # Ensure we always have non-empty values for all message types
+            if not msgs["comment"]:
+                headline = pdata.get("headline", "your industry")
+                msgs["comment"] = f"Really enjoyed reading about your work in {headline.split('|')[0].strip()}!"
+                
+            # Make every column non-empty regardless of mode
+            for m in ("connection", "comment", "inmail_subject", "inmail_body"):
+                if not msgs.get(m):   # safety net
+                    msgs[m] = "—"     # an em-dash placeholder
+            
+            # Ensure followups are never empty
+            if not msgs.get("followups") or not any(msgs["followups"]):
+                msgs["followups"] = [
+                    "Hope you're having a great week! Wanted to share this article that relates to your work.",
+                    "Just came across this resource that might interest you given your background.",
+                    "Would value your perspective on a project I'm working on - any chance we could chat briefly?"
+                ]
+            
             stats.generated += 1
             
             # Find and update the corresponding row in the sheet
@@ -81,12 +110,13 @@ async def run_campaign(
                         cell_updates = [
                             {"range": f"G{row_idx}", "values": [[msgs["connection"]]]},
                             {"range": f"H{row_idx}", "values": [[msgs["comment"]]]},
-                            {"range": f"I{row_idx}", "values": [[msgs["followups"][0] if len(msgs["followups"]) > 0 else ""]]},
-                            {"range": f"J{row_idx}", "values": [[msgs["followups"][1] if len(msgs["followups"]) > 1 else ""]]},
-                            {"range": f"K{row_idx}", "values": [[msgs["followups"][2] if len(msgs["followups"]) > 2 else ""]]},
+                            {"range": f"I{row_idx}", "values": [[msgs["followups"][0] if len(msgs["followups"]) > 0 else "—"]]},
+                            {"range": f"J{row_idx}", "values": [[msgs["followups"][1] if len(msgs["followups"]) > 1 else "—"]]},
+                            {"range": f"K{row_idx}", "values": [[msgs["followups"][2] if len(msgs["followups"]) > 2 else "—"]]},
                             {"range": f"L{row_idx}", "values": [[f"Subject: {msgs['inmail_subject']}\nBody: {msgs['inmail_body']}"]]},
                             {"range": f"M{row_idx}", "values": [["GENERATED"]]},
-                            {"range": f"N{row_idx}", "values": [[now]]}
+                            {"range": f"N{row_idx}", "values": [[now]]},
+                            {"range": f"P{row_idx}", "values": [[str(p.followers_count)]]}  # Store followers count in a new column
                         ]
                         
                         # Execute the batch update
@@ -102,25 +132,36 @@ async def run_campaign(
                 continue
             
             # 2 send invitation (for all modes except "Generate only")
-            await client.send_invitation(provider_id, msgs["connection"])  # Changed from profile_id to provider_id
+            # Use the invitation API to send connection request, with optional scheduling
+            await client.send_invitation(
+                provider_id=provider_id, 
+                message=msgs["connection"],
+                send_at=schedule_time
+            )
             
             # Update status in sheet
             if worksheet and row_idx:
+                status_value = "SCHEDULED" if schedule_time else "INVITED"
                 now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
                 worksheet.batch_update([
-                    {"range": f"M{row_idx}", "values": [["INVITED"]]},
+                    {"range": f"M{row_idx}", "values": [[status_value]]},
                     {"range": f"N{row_idx}", "values": [[now]]}
                 ])
             
             # 3 comment (for "Invite + Comment" and "Full" modes)
             if (mode == "Invite + Comment" or mode == "Full") and posts:
-                await client.comment_post(posts[0]["id"], msgs["comment"])  # Using post id which should be correct
+                await client.comment_post(
+                    post_id=posts[0]["id"], 
+                    message=msgs["comment"],
+                    send_at=schedule_time
+                )
                 
                 # Update status in sheet
                 if worksheet and row_idx:
+                    status_value = "SCHEDULED" if schedule_time else "COMMENTED"
                     now = dt.datetime.now(dt.UTC).replace(tzinfo=utc).isoformat()
                     worksheet.batch_update([
-                        {"range": f"M{row_idx}", "values": [["COMMENTED"]]},
+                        {"range": f"M{row_idx}", "values": [[status_value]]},
                         {"range": f"N{row_idx}", "values": [[now]]}
                     ])
 
