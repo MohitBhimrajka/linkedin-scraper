@@ -1,24 +1,23 @@
 import re
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
+from dataclasses import dataclass
 from src.logging_conf import logger
+import pandas as pd
 
 
-class Profile(BaseModel):
-    """
-    Pydantic model for a LinkedIn profile.
-    
-    Represents the structured data extracted from Google CSE results.
-    """
+@dataclass
+class Profile:
     linkedin_url: str
     title: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     description: Optional[str] = None
     profile_image_url: Optional[str] = None
-    followers_count: Optional[int] = 0  # Added followers count field
-    connection_state: Optional[str] = "NOT_CONNECTED"  # Default connection state
+    followers_count: Optional[int] = None
     contact_status: Optional[str] = "Not contacted"  # Default contact status
+    connection_state: Optional[str] = "NOT_CONNECTED"  # Default connection state
+    provider_id: Optional[str] = None  # Unipile-specific provider ID
     connection_msg: Optional[str] = ""  # Connection message
     comment_msg: Optional[str] = ""  # Comment message
     followup1: Optional[str] = ""  # First follow-up message
@@ -27,7 +26,24 @@ class Profile(BaseModel):
     inmail: Optional[str] = ""  # InMail message
     location: Optional[str] = None
     company: Optional[str] = None
-    provider_id: Optional[str] = None  # Unipile provider ID
+    
+    def __post_init__(self):
+        """Ensure consistent default values for key fields"""
+        # Handle missing or inconsistent contact_status
+        if not self.contact_status or pd.isna(self.contact_status):
+            self.contact_status = "Not contacted"
+            
+        # Handle missing or inconsistent connection_state
+        if not self.connection_state or pd.isna(self.connection_state):
+            self.connection_state = "NOT_CONNECTED"
+            
+        # Normalize connection_state (always uppercase)
+        if isinstance(self.connection_state, str):
+            self.connection_state = self.connection_state.upper()
+            
+        # Ensure consistent handling of new profiles
+        if self.connection_state == "NOT_CONNECTED" and self.contact_status == "Profile Discovered":
+            self.contact_status = "Not contacted"
 
 
 def normalize_results(raw_items: List[Dict]) -> List[Profile]:
@@ -164,7 +180,9 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         profile_image_url=profile_image_url,
         followers_count=0,  # Initialize to 0, will be updated with real data if available
         location=location,
-        company=company.strip() or None  # Ensure it's None if empty after stripping
+        company=company.strip() or None,  # Ensure it's None if empty after stripping
+        contact_status="Not contacted",  # Explicitly set default status
+        connection_state="NOT_CONNECTED"  # Explicitly set default connection state
     )
 
 

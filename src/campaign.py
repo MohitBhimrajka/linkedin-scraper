@@ -336,15 +336,15 @@ async def run_campaign(
                                         15,  # Column O (15th column) for Contact Status 
                                         "Invited + Commented"
                                     )
-                                
-                                # Update Master_Profiles
-                                if spreadsheet:
-                                    update_master_profile_action(
-                                        spreadsheet, 
-                                        p.linkedin_url, 
-                                        "Invited + Commented",
-                                        provider_id
-                                    )
+                                    
+                                    # Update Master_Profiles
+                                    if spreadsheet:
+                                        update_master_profile_action(
+                                            spreadsheet, 
+                                            p.linkedin_url, 
+                                            "Invited + Commented",
+                                            provider_id
+                                        )
                         except Exception as e:
                             logger.warning(f"Failed to comment on post for {provider_id}: {str(e)}")
                             # Non-fatal error, don't increment error count

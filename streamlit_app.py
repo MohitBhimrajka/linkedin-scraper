@@ -11,6 +11,7 @@ from google.genai import types
 from gspread.exceptions import WorksheetNotFound, GSpreadException
 from datetime import datetime
 import traceback
+import re
 
 # Import from our scraper
 from src.runner import process_query, load_queries
@@ -178,10 +179,36 @@ def optimize_query_with_gemini(query_text):
             contents=contents,
             config=generate_content_config,
         )
-        return response.text.strip()
+        
+        response_text = response.text.strip()
+        
+        # Attempt to parse the response as JSON
+        try:
+            # Extract JSON array if found within response text
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            
+            if json_match:
+                json_str = json_match.group(0)
+                query_variations = json.loads(json_str)
+                
+                # Validate that we have a list of strings
+                if isinstance(query_variations, list) and all(isinstance(q, str) for q in query_variations):
+                    # Return the list of query variations
+                    logger.info(f"Generated {len(query_variations)} query variations with Gemini")
+                    return query_variations
+                else:
+                    logger.warning("Gemini response was not a list of strings, using original query")
+            else:
+                logger.warning("No JSON array found in Gemini response, using original query")
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Gemini response as JSON, using original query")
+        
+        # If we couldn't parse or the response wasn't valid, return the original query as a single-item list
+        return [query_text]
+        
     except Exception as e:
         st.error(f"❌ Error optimizing ICP criteria with Gemini: {str(e)}")
-        return query_text
+        return [query_text]  # Return original query in a list in case of error
 
 
 def save_queries_to_yaml(queries):
@@ -301,8 +328,8 @@ async def cleanup_spreadsheet(show_progress=True):
         # Get the spreadsheet
         spreadsheet = get_spreadsheet(sheet_id)
         
-        # Get all worksheets
-        worksheets = spreadsheet.worksheets()
+        # Get all worksheets - create a copy of the list to safely iterate
+        worksheets = list(spreadsheet.worksheets())
         
         # Progress tracking
         if show_progress:
@@ -320,7 +347,7 @@ async def cleanup_spreadsheet(show_progress=True):
             if show_progress:
                 progress_bar.progress((i + 1) / len(worksheets))
             
-            if sheet_title == "Master_Sheet":
+            if sheet_title == "Master_Sheet" or sheet_title == "Master_Profiles":
                 # Clear all data in Master_Sheet except headers
                 try:
                     # Get all values to determine the size
@@ -329,14 +356,15 @@ async def cleanup_spreadsheet(show_progress=True):
                         # Clear everything after row 1
                         worksheet.batch_clear([f"A2:Z{len(all_values)}"])
                         if show_progress:
-                            progress_text.text(f"Cleared all runs from Master_Sheet")
+                            progress_text.text(f"Cleared all data from {sheet_title}")
                 except Exception as e:
                     if show_progress:
-                        st.warning(f"Could not clear Master_Sheet: {str(e)}")
-                    logger.warning(f"Failed to clear Master_Sheet: {str(e)}")
+                        st.warning(f"Could not clear {sheet_title}: {str(e)}")
+                    logger.warning(f"Failed to clear {sheet_title}: {str(e)}")
             elif sheet_title != "Sheet1":  # Skip the default Sheet1
                 # Delete all other sheets
                 try:
+                    # Check if this is the current Master_Sheet before deleting
                     spreadsheet.del_worksheet(worksheet)
                     deleted_count += 1
                     if show_progress:
@@ -483,15 +511,29 @@ def get_relationship_stats(df):
 
 def _determine_next_action(connection_state, contact_status, connection_actions, workflow_stages):
     """Determine the next recommended action based on current status"""
+    # Handle NaN or empty values
     if pd.isna(connection_state) or connection_state == "":
         connection_state = "NOT_CONNECTED"
     
     if pd.isna(contact_status) or contact_status == "":
         contact_status = "Not contacted"
     
-    # First check workflow stage
+    # Normalize contact status for consistent matching
+    contact_status_lower = contact_status.lower() if isinstance(contact_status, str) else ""
+    
+    # Map status for new leads to ensure they're not classified as "profile discovered"
+    if connection_state == "NOT_CONNECTED" and (contact_status_lower == "not contacted" or "profile discovered" in contact_status_lower):
+        # For new leads that have just been discovered but not contacted yet
+        return "Generate messages"  # Default action for new leads
+    
+    # First check workflow stage (with more detailed matching)
     if contact_status in workflow_stages:
         return workflow_stages[contact_status][0]  # Return first recommended action
+    else:
+        # Try a case-insensitive partial match for more flexible status matching
+        for stage, actions in workflow_stages.items():
+            if stage.lower() in contact_status_lower:
+                return actions[0]  # Return first recommended action
     
     # Then check connection state
     if connection_state in connection_actions:
@@ -857,12 +899,12 @@ def main():
                     )
                     
                     limit = st.slider(
-                        "Maximum results per ICP", 
+                        "Max results per Google Search query variation (Google CSE limit: 100)", # Clarified text
                         min_value=10, 
-                        max_value=1000, 
+                        max_value=200, # Allow slider up to 200, PageIterator will cap at 100 for each CSE call
                         value=100, 
                         step=10,
-                        help="Each ICP search will fetch up to this many results"
+                        help="Google Custom Search fetches up to 100 results per individual query. Multiple AI-generated query variations are used to increase total profile discovery."
                     )
                     
                     if st.button("▶️ Run LinkedIn Scraper", type="primary", use_container_width=True):
@@ -1194,7 +1236,10 @@ def main():
                                 
                                 # Update the Contact Status from master if available
                                 if 'Last System Action' in master_data:
-                                    row['Contact Status'] = master_data.get('Last System Action')
+                                    action = master_data.get('Last System Action')
+                                    # Only override if Last System Action has been set to something other than 'Not contacted'
+                                    if action and action != 'Not contacted':
+                                        row['Contact Status'] = action
                                 
                                 # Add the row to our enriched list
                                 enriched_rows.append(row)
@@ -1227,8 +1272,10 @@ def main():
                             "Not contacted": ["Generate messages", "Invite", "Mark contacted"],
                             "Messages generated": ["Invite", "Edit messages", "Mark contacted"],
                             "Invited": ["Follow up", "Mark connected"],
+                            "Invited + Commented": ["Follow up", "Mark connected"],
                             "Message sent": ["Follow up", "Mark responded"],
                             "Follow-up sent": ["Follow up again", "Mark responded"],
+                            "Follow-up scheduled": ["Check status", "Mark responded"],
                         }
                         
                         # Map Connection State to recommended actions
@@ -1256,7 +1303,7 @@ def main():
                         with filter_col2:
                             contact_status_filter = st.multiselect(
                                 "Contact Status",
-                                options=["", "Not contacted", "Messages generated", "Invited", "Message sent", "Follow-up sent"],
+                                options=["", "Not contacted", "Messages generated", "Invited", "Invited + Commented", "Message sent", "Follow-up sent", "Follow-up scheduled"],
                                 default=["Not contacted"],
                                 help="Filter by previous contact status"
                             )
@@ -1264,7 +1311,7 @@ def main():
                         with filter_col3:
                             recommended_action = st.selectbox(
                                 "Recommended Action",
-                                options=["All actions", "Need to invite", "Need to generate messages", "Need to follow up", "Connected profiles"],
+                                options=["All actions", "Need to generate messages", "Need to invite", "Need to follow up", "Wait for acceptance", "Connected profiles", "Mark responded"],
                                 index=0,
                                 help="Filter by recommended next action"
                             )
@@ -1284,16 +1331,21 @@ def main():
                         
                         # Apply Recommended Action filter
                         if recommended_action != "All actions":
-                            if recommended_action == "Need to invite":
+                            if recommended_action == "Need to generate messages":
+                                filtered_df = filtered_df[filtered_df["Contact Status"] == "Not contacted"]
+                            elif recommended_action == "Need to invite":
                                 filtered_df = filtered_df[(filtered_df["Connection State"] == "NOT_CONNECTED") & 
                                                          (filtered_df["Contact Status"].isin(["Not contacted", "Messages generated"]))]
-                            elif recommended_action == "Need to generate messages":
-                                filtered_df = filtered_df[filtered_df["Contact Status"] == "Not contacted"]
                             elif recommended_action == "Need to follow up":
                                 filtered_df = filtered_df[(filtered_df["Connection State"].isin(["INVITED", "PENDING", "CONNECTED"])) & 
                                                          (filtered_df["Contact Status"].isin(["Invited", "Message sent", "Follow-up sent"]))]
+                            elif recommended_action == "Wait for acceptance":
+                                filtered_df = filtered_df[filtered_df["Connection State"] == "PENDING"]
                             elif recommended_action == "Connected profiles":
                                 filtered_df = filtered_df[filtered_df["Connection State"] == "CONNECTED"]
+                            elif recommended_action == "Mark responded":
+                                filtered_df = filtered_df[(filtered_df["Connection State"] == "CONNECTED") &
+                                                        (filtered_df["Contact Status"].isin(["Message sent", "Follow-up sent", "Follow-up scheduled"]))]
                                 
                         # Add recommended next action based on current statuses
                         filtered_df["Recommended Action"] = filtered_df.apply(
@@ -1542,7 +1594,7 @@ def main():
                             elif mode == "Invite only":
                                 status_updates["Contact Status"] = "Invited"
                             elif mode == "Invite + Comment":
-                                status_updates["Contact Status"] = "Invited"
+                                status_updates["Contact Status"] = "Invited + Commented"
                             elif mode == "Message only":
                                 status_updates["Contact Status"] = "Message sent"
                             elif mode == "Full (invite, comment, follow-ups)":
@@ -1711,7 +1763,18 @@ def main():
                             if "Last Msg UTC" in filtered_df.columns:
                                 display_cols.append("Last Msg UTC")
                             
-                            # Ensure all selected columns exist
+                            # Ensure all selected columns exist (and don't remove Connection State or Contact Status - always add them if missing)
+                            for col in ["Connection State", "Contact Status"]:
+                                if col not in filtered_df.columns:
+                                    filtered_df[col] = ""
+                            
+                            # Ensure Contact Status is populated with 'Not contacted' where empty
+                            if "Contact Status" in filtered_df.columns:
+                                filtered_df["Contact Status"] = filtered_df["Contact Status"].fillna("Not contacted")
+                                # Replace empty strings with 'Not contacted'
+                                filtered_df.loc[filtered_df["Contact Status"] == "", "Contact Status"] = "Not contacted"
+                            
+                            # Filter display columns to those that exist in the dataframe
                             display_cols = [col for col in display_cols if col in filtered_df.columns]
                             
                             # Display the data

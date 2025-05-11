@@ -7,7 +7,7 @@ from typing import List, Dict, Optional, Set
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import APIError, SpreadsheetNotFound, WorksheetNotFound
-from src.transform import Profile
+from src.transform import Profile, normalize_results
 from src.logging_conf import logger
 from google import genai
 from google.genai import types
@@ -158,7 +158,7 @@ def generate_sheet_names_with_gemini(icp_list: List[Dict]) -> Dict[int, str]:
     return {}
 
 
-def generate_sheet_name(icp_text: str, index: int, gemini_names: Dict[int, str] = None) -> str:
+def generate_sheet_name(icp_text: str, index: int, gemini_names: Dict[int, str] = None, spreadsheet = None) -> str:
     """
     Generate a descriptive sheet name from the ICP text.
     
@@ -166,6 +166,7 @@ def generate_sheet_name(icp_text: str, index: int, gemini_names: Dict[int, str] 
         icp_text: Original ICP text
         index: ICP index (for uniqueness)
         gemini_names: Optional dictionary of Gemini-generated names by index
+        spreadsheet: Optional spreadsheet object to check for existing sheet names
         
     Returns:
         A short descriptive name for the sheet (max 30 chars)
@@ -178,73 +179,99 @@ def generate_sheet_name(icp_text: str, index: int, gemini_names: Dict[int, str] 
         if len(sheet_name) > 30:
             sheet_name = sheet_name[:27] + "..."
         logger.info(f"Using Gemini-generated sheet name: {sheet_name}")
-        return sheet_name
-    
-    # Extract key phrases by removing common words and special characters
-    text = icp_text.lower()
-    
-    # Try to extract roles (expanded list with more options)
-    roles = re.findall(r'(ceo|cto|coo|cfo|vp|chief|director|head|lead|manager|executive|founder|president|principal)', text)
-    
-    # Try to extract industries (expanded list)
-    industries = re.findall(r'(saas|tech|fintech|health|retail|ecommerce|software|manufacturing|marketing|finance|pharma|insurance|legal|hospitality|education)', text)
-    
-    # Try to extract locations 
-    locations = re.findall(r'(san francisco|new york|london|berlin|europe|usa|united states|america|asia|canada|australia|india|uk|france|germany)', text)
-    
-    # Extract company characteristics
-    company_chars = re.findall(r'(startup|enterprise|series [abcde]|fortune 500|small business|mid-market|global)', text)
-    
-    # Combine the most important elements
-    parts = []
-    
-    # Primary role
-    if roles:
-        parts.append(roles[0].title())
-    
-    # Industry or sector
-    if industries:
-        parts.append(industries[0].title())
-    
-    # Add company characteristic if we have space
-    if company_chars and len(parts) < 2:
-        parts.append(company_chars[0].title())
-        
-    # Location only if we don't have enough context
-    if locations and len(parts) < 2:
-        parts.append(locations[0].title())
-    
-    # If we couldn't extract meaningful parts, use key words from the text
-    if not parts:
-        # Extract the first 2-3 significant words
-        words = re.sub(r'[^\w\s]', ' ', text).split()
-        significant_words = [w for w in words if len(w) > 3 and w not in ('with', 'from', 'that', 'have', 'this', 'are', 'for', 'the', 'and')]
-        
-        if significant_words:
-            # Take up to 3 significant words
-            parts = [w.title() for w in significant_words[:3]]
-        else:
-            # Last resort, use the first few words
-            parts = [w.title() for w in words[:2] if w]
-    
-    # Create the sheet name
-    if parts:
-        sheet_name = " ".join(parts)
     else:
-        # If all else fails, use a generic name with timestamp for uniqueness
-        timestamp = int(time.time()) % 10000
-        sheet_name = f"ICP {index + 1}"
+        # Extract key phrases by removing common words and special characters
+        text = icp_text.lower()
+        
+        # Try to extract roles (expanded list with more options)
+        roles = re.findall(r'(ceo|cto|coo|cfo|vp|chief|director|head|lead|manager|executive|founder|president|principal)', text)
+        
+        # Try to extract industries (expanded list)
+        industries = re.findall(r'(saas|tech|fintech|health|retail|ecommerce|software|manufacturing|marketing|finance|pharma|insurance|legal|hospitality|education)', text)
+        
+        # Try to extract locations 
+        locations = re.findall(r'(san francisco|new york|london|berlin|europe|usa|united states|america|asia|canada|australia|india|uk|france|germany)', text)
+        
+        # Extract company characteristics
+        company_chars = re.findall(r'(startup|enterprise|series [abcde]|fortune 500|small business|mid-market|global)', text)
+        
+        # Combine the most important elements
+        parts = []
+        
+        # Primary role
+        if roles:
+            parts.append(roles[0].title())
+        
+        # Industry or sector
+        if industries:
+            parts.append(industries[0].title())
+        
+        # Add company characteristic if we have space
+        if company_chars and len(parts) < 2:
+            parts.append(company_chars[0].title())
+            
+        # Location only if we don't have enough context
+        if locations and len(parts) < 2:
+            parts.append(locations[0].title())
+        
+        # If we couldn't extract meaningful parts, use key words from the text
+        if not parts:
+            # Extract the first 2-3 significant words
+            words = re.sub(r'[^\w\s]', ' ', text).split()
+            significant_words = [w for w in words if len(w) > 3 and w not in ('with', 'from', 'that', 'have', 'this', 'are', 'for', 'the', 'and')]
+            
+            if significant_words:
+                # Take up to 3 significant words
+                parts = [w.title() for w in significant_words[:3]]
+            else:
+                # Last resort, use the first few words
+                parts = [w.title() for w in words[:2] if w]
+        
+        # Create the sheet name
+        if parts:
+            sheet_name = " ".join(parts)
+        else:
+            # If all else fails, use a generic name with timestamp for uniqueness
+            timestamp = int(time.time()) % 10000
+            sheet_name = f"ICP {index + 1}"
+        
+        # Always add the index for uniqueness in case of similar ICPs
+        if index > 0 and not re.search(r'\d+$', sheet_name):
+            sheet_name = f"{sheet_name} {index + 1}"
+        
+        # Ensure name isn't too long (Sheets has a 100 char limit, but we'll keep it shorter)
+        if len(sheet_name) > 30:
+            sheet_name = sheet_name[:27] + "..."
+        
+        # Replace characters that might cause issues in sheet names
+        sheet_name = re.sub(r'[\\/*[\]?:]', '', sheet_name)
     
-    # Always add the index for uniqueness in case of similar ICPs
-    if index > 0 and not re.search(r'\d+$', sheet_name):
-        sheet_name = f"{sheet_name} {index + 1}"
-    
-    # Ensure name isn't too long (Sheets has a 100 char limit, but we'll keep it shorter)
-    if len(sheet_name) > 30:
-        sheet_name = sheet_name[:27] + "..."
-    
-    # Replace characters that might cause issues in sheet names
-    sheet_name = re.sub(r'[\\/*[\]?:]', '', sheet_name)
+    # Check for uniqueness if spreadsheet is provided
+    if spreadsheet:
+        existing_sheets = [ws.title for ws in spreadsheet.worksheets()]
+        original_name = sheet_name
+        counter = 1
+        
+        # Add counters until we find a unique name
+        while sheet_name in existing_sheets:
+            # Try adding or incrementing a counter suffix
+            if counter == 1:
+                sheet_name = f"{original_name} ({counter})"
+            else:
+                # Replace the previous counter with the new one
+                sheet_name = re.sub(r'\(\d+\)$', f"({counter})", sheet_name)
+                # If it doesn't have a counter pattern to replace, append it
+                if sheet_name == original_name:
+                    sheet_name = f"{original_name} ({counter})"
+            
+            counter += 1
+            
+            # Keep the length in check
+            if len(sheet_name) > 30:
+                base = original_name[:27 - len(f" ({counter})")]
+                sheet_name = f"{base}... ({counter})"
+        
+        logger.info(f"Ensured unique sheet name: {sheet_name}")
     
     return sheet_name
 
@@ -814,94 +841,118 @@ def append_rows(profiles: List[Profile], main_sheet: bool = False):
 
 def append_icp_results(icp_results: List[Dict]):
     """
-    Create separate sheets for each ICP and append results.
+    Create or append to sheets with the ICP results.
     
     Args:
-        icp_results: List of dictionaries with ICP data and results
-            Each dict should have:
-            - "original": Original ICP text
-            - "optimized": Primary optimized query (typically the first variation)
-            - "optimized_variations": List of all query variations used (optional)
-            - "results": Raw search results
-            - "result_count": Number of results found
+        icp_results: List of dictionaries with each ICP's results
     """
-    if not icp_results:
-        logger.info("No ICP results to append")
-        return
-    
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    
     if not sheet_id:
-        raise ValueError("Missing GOOGLE_SHEET_ID environment variable")
+        logger.error("GOOGLE_SHEET_ID not found in environment variables, cannot append results")
+        return
     
     try:
         # Get the spreadsheet
         spreadsheet = get_spreadsheet(sheet_id)
         
-        # Generate sheet names with Gemini
+        # Create or get Master_Sheet to track all runs
+        try:
+            master_sheet = spreadsheet.worksheet("Master_Sheet")
+        except WorksheetNotFound:
+            master_sheet = spreadsheet.add_worksheet(title="Master_Sheet", rows=1000, cols=6)
+            master_sheet.update("A1:F1", [["Date", "ICP #", "Sheet Name", "Found Profiles", "Original Query", "Sheet Link"]])
+            master_sheet.format("A1:F1", {
+                "textFormat": {"bold": True},
+                "horizontalAlignment": "CENTER",
+                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
+            })
+        
+        # Generate sheet names for each ICP for usability
         gemini_names = generate_sheet_names_with_gemini(icp_results)
         
-        # Process each ICP
+        # Create or update sheets for each ICP
         for i, icp_data in enumerate(icp_results):
-            # Generate sheet name based on ICP content
-            sheet_name = generate_sheet_name(icp_data["original"], i, gemini_names)
+            original_query = icp_data["original"]
             
-            # Get or create worksheet with unique name
+            # Generate a descriptive sheet name
+            sheet_name = generate_sheet_name(original_query, i, gemini_names, spreadsheet)
+            
+            # Create or get the worksheet for this ICP
             worksheet = create_or_get_worksheet(spreadsheet, sheet_name)
             
-            # Normalize results for this ICP
-            from src.transform import normalize_results
-            icp_profiles = normalize_results(icp_data.get("results", []))
+            # Format the worksheet for better readability (apply formatting only once)
+            _format_worksheet(worksheet)
             
-            # First, update the Master_Profiles sheet and get enriched profiles
-            enriched_profiles = update_master_profiles(spreadsheet, icp_profiles, sheet_name)
-            
-            # Append enriched profiles to the ICP-specific worksheet
-            append_rows_to_worksheet(worksheet, list(enriched_profiles.values()))
-            
-            # Record query variations if available in a separate "Query Variations" sheet for this ICP
-            if "optimized_variations" in icp_data and icp_data["optimized_variations"]:
-                try:
-                    variations_sheet_name = f"{sheet_name} - Variations"
-                    variations_sheet_name = ensure_unique_sheet_name(spreadsheet, variations_sheet_name)
+            # Get profiles for this ICP
+            if "results" in icp_data and icp_data["results"]:
+                raw_profiles = icp_data["results"]
+                profiles = normalize_results(raw_profiles)
+                
+                if profiles:
+                    logger.info(f"Appending {len(profiles)} profiles to sheet '{sheet_name}'")
+                    # Append profiles to the worksheet
+                    append_rows_to_worksheet(worksheet, profiles)
                     
-                    try:
-                        variations_sheet = spreadsheet.worksheet(variations_sheet_name)
-                    except WorksheetNotFound:
-                        variations_sheet = spreadsheet.add_worksheet(title=variations_sheet_name, rows=20, cols=3)
-                        variations_sheet.update("A1:C1", [["Variation #", "Query", "Notes"]])
-                        variations_sheet.format("A1:C1", {
-                            "textFormat": {"bold": True},
-                            "horizontalAlignment": "CENTER",
-                            "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
-                        })
-                        
-                    # Create rows for each variation
-                    variation_rows = []
-                    for v_idx, variation in enumerate(icp_data["optimized_variations"]):
-                        note = "Primary" if v_idx == 0 else ""
-                        variation_rows.append([v_idx + 1, variation, note])
-                        
-                    variations_sheet.update("A2:C" + str(len(variation_rows) + 1), variation_rows)
-                    logger.info(f"Added {len(variation_rows)} query variations to {variations_sheet_name}")
+                    # Update Master_Sheet with info about this run
+                    current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    master_row = [
+                        current_date,           # Date
+                        str(i + 1),             # ICP #
+                        sheet_name,             # Sheet Name
+                        str(len(profiles)),     # Found Profiles
+                        original_query,         # Original Query
+                        f'=HYPERLINK("https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={worksheet.id}", "Open Sheet")' # Link
+                    ]
                     
-                    # Auto-resize columns
-                    try:
-                        variations_sheet.columns_auto_resize(0, 2)  # cols A-C
-                    except Exception as resize_err:
-                        logger.warning(f"Failed to auto-resize columns in variations sheet: {str(resize_err)}")
+                    # Append to Master_Sheet
+                    master_sheet.append_row(master_row)
+                    
+                    # Also add variations if available
+                    if "optimized_variations" in icp_data and icp_data["optimized_variations"]:
+                        # Create a Queries sheet to log all the query variations
+                        query_info_rows = []
                         
-                except Exception as var_err:
-                    logger.warning(f"Failed to create variations sheet for {sheet_name}: {str(var_err)}")
-            
-        # Create a summary sheet
+                        # Add header row for variations
+                        query_info_rows.append(["Variations Used:"])
+                        
+                        # Add each variation
+                        for v_idx, variation in enumerate(icp_data["optimized_variations"]):
+                            query_info_rows.append([f"Variation {v_idx+1}:", variation])
+                        
+                        # Append query variations at the bottom of the worksheet (after the profiles)
+                        all_values = worksheet.get_all_values()
+                        total_rows = len(all_values)
+                        
+                        # Add two blank rows for separation
+                        blank_rows = [[""] * 9, [""] * 9]
+                        worksheet.update(f'A{total_rows + 1}', blank_rows)
+                        
+                        # Add the query info
+                        worksheet.update(f'A{total_rows + 3}', query_info_rows)
+                
+                else:
+                    logger.warning(f"No profiles found for ICP #{i+1}: {original_query}")
+            else:
+                logger.warning(f"No results data found for ICP #{i+1}")
+        
+        # Resize columns in Master_Sheet for better readability
+        try:
+            master_sheet.columns_auto_resize(0, 5)  # Columns A to F
+        except Exception as e:
+            logger.warning(f"Could not resize columns in Master_Sheet: {str(e)}")
+        
+        # Create or update a summary sheet with all profiles
         create_summary_sheet(spreadsheet, icp_results)
         
-        logger.info(f"Successfully created and populated {len(icp_results)} ICP-specific sheets")
+        # Create or update Master_Profiles sheet
+        create_or_get_master_profiles_sheet(spreadsheet)
         
+        return
+    
     except Exception as e:
-        logger.error(f"Error creating ICP-specific sheets: {str(e)}")
+        logger.error(f"Error appending ICP results: {str(e)}")
         traceback.print_exc()
-        raise
 
 # Add retry decorators for common gspread operations that may hit quota limits
 @retry(
@@ -1098,12 +1149,15 @@ def create_or_get_master_profiles_sheet(spreadsheet) -> gspread.Worksheet:
     return worksheet
 
 
-async def _fetch_provider_ids_for_new_profiles(new_profile_objects: List[Profile]):
+async def _fetch_provider_ids_for_new_profiles(new_profile_objects: List[Profile], max_concurrent_unipile_calls: int = 3, unipile_call_delay: float = 2.0):
     """
-    Asynchronously fetches Unipile provider_ids for new Profile objects.
+    Asynchronously fetches Unipile provider_ids for new Profile objects
+    with concurrency control and delay.
     
     Args:
         new_profile_objects: List of Profile objects that need provider_id enrichment
+        max_concurrent_unipile_calls: Max number of concurrent calls to Unipile get_profile
+        unipile_call_delay: Delay in seconds between individual get_profile calls
     """
     if not (os.getenv("UNIPILE_API_KEY") and os.getenv("UNIPILE_DSN") and os.getenv("UNIPILE_ACCOUNT_ID")):
         logger.info("Unipile credentials not set, skipping provider_id enrichment for new profiles.")
@@ -1113,31 +1167,40 @@ async def _fetch_provider_ids_for_new_profiles(new_profile_objects: List[Profile
         return
 
     client = None
-    try:
-        client = UnipileClient()
-        # Create tasks to fetch profile data (which includes provider_id)
-        tasks = [client.get_profile(p.linkedin_url) for p in new_profile_objects]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for i, res_or_exc in enumerate(results):
-            profile_obj = new_profile_objects[i]
-            if isinstance(res_or_exc, dict):
-                pid = res_or_exc.get("provider_id") or res_or_exc.get("providerId")
-                if pid:
-                    profile_obj.provider_id = pid  # Update the Profile object directly
-                    logger.info(f"Enriched new profile {profile_obj.linkedin_url} with provider_id: {pid}")
+    # Use a semaphore to limit concurrent calls
+    semaphore = asyncio.Semaphore(max_concurrent_unipile_calls) 
+    
+    async def fetch_and_enrich_profile(profile_obj: Profile, unipile_client: UnipileClient):
+        # Acquire semaphore before making a call
+        async with semaphore: 
+            try:
+                p_data = await unipile_client.get_profile(profile_obj.linkedin_url)
+                if isinstance(p_data, dict):
+                    pid = p_data.get("provider_id") or p_data.get("providerId")
+                    if pid:
+                        profile_obj.provider_id = pid # Update the Profile object directly
+                        logger.info(f"Enriched new profile {profile_obj.linkedin_url} with provider_id: {pid}")
+                    else:
+                        logger.warning(f"No provider_id in Unipile response for new profile {profile_obj.linkedin_url}. Response: {p_data}")
                 else:
-                    logger.warning(f"No provider_id in Unipile response for new profile {profile_obj.linkedin_url}. Response: {res_or_exc}")
-            elif isinstance(res_or_exc, Exception):
-                logger.warning(f"Failed to fetch Unipile data for new profile {profile_obj.linkedin_url} to get provider_id: {res_or_exc}")
-            else:
-                logger.warning(f"Unexpected result type ({type(res_or_exc)}) when fetching Unipile data for new profile {profile_obj.linkedin_url}.")
+                     logger.warning(f"Unexpected data type ({type(p_data)}) from Unipile get_profile for {profile_obj.linkedin_url}")
+            except Exception as e:
+                # Log specific error including the URL for easier debugging
+                logger.warning(f"Failed to fetch Unipile data for new profile {profile_obj.linkedin_url} to get provider_id: {e}")
+            
+            # Add delay *after* each call (or attempt), inside the semaphore block to ensure serial delay effect for calls
+            await asyncio.sleep(unipile_call_delay)
+
+    try:
+        client = UnipileClient() # Initialize client once
+        tasks = [fetch_and_enrich_profile(p_obj, client) for p_obj in new_profile_objects]
+        await asyncio.gather(*tasks) # Run all enrichment tasks
     
     except Exception as e:
         logger.error(f"General error during provider_id fetching for new profiles: {e}")
     finally:
         if client:
-            await client.close()
+            await client.close() # Ensure client is closed
 
 
 def update_master_profiles(spreadsheet, profiles: List[Profile], icp_name: str) -> Dict[str, Profile]:
@@ -1223,16 +1286,20 @@ def update_master_profiles(spreadsheet, profiles: List[Profile], icp_name: str) 
                 })
         else:
             # New profile for Master_Profiles
-            profile_obj.contact_status = 'Profile Discovered'  # Set initial status for master
+            profile_obj.contact_status = 'Not contacted'  # Set initial status for master (changed from 'Profile Discovered')
             # Track this profile object for provider_id fetching
             new_profile_objects_to_fetch_pid.append(profile_obj)
 
     # Fetch provider_ids for all new profiles collected
     if new_profile_objects_to_fetch_pid:
-        logger.info(f"Attempting to enrich {len(new_profile_objects_to_fetch_pid)} new profiles with Unipile provider_id...")
+        logger.info(f"Attempting to enrich {len(new_profile_objects_to_fetch_pid)} new profiles with Unipile provider_id (max concurrent: 3, delay: 2s)...")
         try:
             # Use asyncio.run for simplicity, but be cautious of nested event loops
-            asyncio.run(_fetch_provider_ids_for_new_profiles(new_profile_objects_to_fetch_pid))
+            asyncio.run(_fetch_provider_ids_for_new_profiles(
+                new_profile_objects_to_fetch_pid,
+                max_concurrent_unipile_calls=3, # Start conservatively
+                unipile_call_delay=2.0          # Start conservatively
+            ))
         except RuntimeError as e:
             if "cannot run current event loop" in str(e).lower() or "event loop is already running" in str(e).lower():
                 logger.warning(f"Asyncio loop issue during provider_id enrichment: {e}. This might happen in nested async calls.")
@@ -1255,7 +1322,7 @@ def update_master_profiles(spreadsheet, profiles: List[Profile], icp_name: str) 
             getattr(p_obj, 'location', '') or '',
             now_utc,  # First Seen UTC
             now_utc,  # Last Seen UTC
-            p_obj.contact_status,  # 'Profile Discovered'
+            p_obj.contact_status,  # 'Not contacted'
             now_utc,  # Last System Action UTC
             p_obj.connection_state or 'NOT_CONNECTED',
             '',  # Unipile Last Interaction UTC
@@ -1324,3 +1391,30 @@ def update_master_profile_action(spreadsheet, linkedin_url: str, action: str, pr
             
     except Exception as e:
         logger.error(f"Failed to update master profile action: {e}") 
+
+def _format_worksheet(worksheet):
+    """
+    Apply standard formatting to a worksheet.
+    
+    Args:
+        worksheet: gspread worksheet to format
+    """
+    try:
+        # Format headers (make bold, center alignment, background color)
+        worksheet.format("A1:W1", {
+            "textFormat": {"bold": True},
+            "horizontalAlignment": "CENTER",
+            "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
+        })
+        
+        # Freeze header row
+        worksheet.freeze(rows=1)
+        
+        # Auto-resize columns to fit content
+        try:
+            columns_auto_resize_with_retry(worksheet, 0, 22)  # Resize columns A-W (0-22)
+        except Exception as e:
+            logger.warning(f"Failed to auto-resize columns in _format_worksheet: {str(e)}")
+    
+    except Exception as e:
+        logger.warning(f"Error formatting worksheet: {str(e)}") 

@@ -218,7 +218,6 @@ class UnipileClient:
     async def list_sent_invitations(self, limit:int=500)->List[Dict]:
         """Get list of sent invitations and their statuses"""
         try:
-            # Use the working endpoint directly
             response_data = await self._request(
                 "GET", "/users/invitations",
                 params={"direction": "sent", "limit": limit, "account_id": self.account_id}
@@ -249,28 +248,30 @@ class UnipileClient:
                 if not isinstance(item, dict):
                     logger.warning(f"Skipping non-dict item in invitations list: {str(item)[:100]}")
                     continue
-                    
-                # Ensure provider_id is present regardless of API version naming
                 if "providerId" in item and "provider_id" not in item:
                     item["provider_id"] = item["providerId"]
                 if "connectionState" in item and "connection_state" not in item:
                     item["connection_state"] = item["connectionState"]
             
             return items_list
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTPStatusError after retries fetching sent invitations: {e}. Status: {e.response.status_code if e.response else 'N/A'}")
+            if e.response and e.response.status_code >= 500:
+                logger.error("Unipile server error (5xx) while fetching sent invitations. Returning empty list.")
+            return []
         except Exception as e:
-            logger.error(f"Error fetching sent invitations: {str(e)}")
+            logger.error(f"Generic error fetching sent invitations: {str(e)}")
             return []
 
     async def list_relations(self, limit:int=1000)->List[Dict]:
         """Get list of all relations and their connection states"""
         try:
-            # Use the working endpoint directly
             response_data = await self._request(
                 "GET", "/users/relations",
                 params={"limit": limit, "account_id": self.account_id}
             )
             
-            # Handle both dict with 'items' and direct list response formats
+            items_list = [] # Ensure items_list is initialized
             if isinstance(response_data, dict) and "items" in response_data and isinstance(response_data["items"], list):
                 items_list = response_data["items"]
                 logger.debug(f"Using 'items' list from dictionary response for /users/relations")
@@ -286,28 +287,30 @@ class UnipileClient:
                 if not isinstance(item, dict):
                     logger.warning(f"Skipping non-dict item in relations list: {str(item)[:100]}")
                     continue
-                    
-                # Ensure provider_id is present regardless of API version naming
                 if "providerId" in item and "provider_id" not in item:
                     item["provider_id"] = item["providerId"]
                 if "connectionState" in item and "connection_state" not in item:
                     item["connection_state"] = item["connectionState"]
             
             return items_list
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTPStatusError after retries fetching relations: {e}. Status: {e.response.status_code if e.response else 'N/A'}")
+            if e.response and e.response.status_code >= 500:
+                logger.error("Unipile server error (5xx) while fetching relations. Returning empty list.")
+            return []
         except Exception as e:
-            logger.error(f"Error fetching relations: {str(e)}")
+            logger.error(f"Generic error fetching relations: {str(e)}")
             return []
 
     async def list_conversations(self, limit:int=500)->List[Dict]:
         """Get list of conversations with unread counts and last message timestamps"""
         try:
-            # Use the working endpoint directly
             response_data = await self._request(
                 "GET", "/users/conversations",
                 params={"limit": limit, "account_id": self.account_id}
             )
             
-            # Handle both dict with 'items' and direct list response formats
+            items_list = [] # Ensure items_list is initialized
             if isinstance(response_data, dict) and "items" in response_data and isinstance(response_data["items"], list):
                 items_list = response_data["items"]
                 logger.debug(f"Using 'items' list from dictionary response for /users/conversations")
@@ -318,17 +321,19 @@ class UnipileClient:
                 logger.error(f"Expected dict with 'items' list or a direct list from /users/conversations, got {type(response_data)}. Response: {str(response_data)[:200]}")
                 return []
             
-            # Process items if needed
             for item in items_list:
                 if not isinstance(item, dict):
                     logger.warning(f"Skipping non-dict item in conversations list: {str(item)[:100]}")
                     continue
-                    
-                # Normalize fields if needed
                 if "providerId" in item and "provider_id" not in item:
                     item["provider_id"] = item["providerId"]
             
             return items_list
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTPStatusError after retries fetching conversations: {e}. Status: {e.response.status_code if e.response else 'N/A'}")
+            if e.response and e.response.status_code >= 500:
+                logger.error("Unipile server error (5xx) while fetching conversations. Returning empty list.")
+            return []
         except Exception as e:
             logger.error(f"Error fetching conversations: {str(e)}")
             return []
