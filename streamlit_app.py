@@ -75,7 +75,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def optimize_query_with_gemini(query_text):
+def optimize_query_with_gemini(query_text, negative_keywords_str=""):
     """Use Gemini API to optimize a search query into multiple variations."""
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     
@@ -105,6 +105,10 @@ def optimize_query_with_gemini(query_text):
     client = genai.Client(api_key=gemini_api_key)
     model = "gemini-2.5-flash-preview-04-17"
     
+    # Process negative keywords if provided
+    negative_keywords_list = [kw.strip() for kw in negative_keywords_str.split(',') if kw.strip()]
+    negative_keywords_for_prompt = " ".join([f"-{kw}" for kw in negative_keywords_list])
+    
     prompt = f"""
     You are a world-class expert in LinkedIn search optimization and Google dorking techniques, specializing in crafting highly precise search queries to find the exact LinkedIn profiles matching specific Ideal Customer Profile (ICP) criteria.
 
@@ -133,10 +137,11 @@ def optimize_query_with_gemini(query_text):
           * Example: `("Series B" OR "Series C" OR "growth stage" OR scale-up OR scaleup OR "high growth")`
     4.  **Logical Structure:** Use nested parentheses to create a clear logical structure, with most important criteria first.
     5.  **Balance AND/OR Logic:** Make sure your query combines broad enough terms to find good matches while being specific enough to exclude irrelevant profiles.
+    6.  **Strategic Exclusions:** Based on the ICP, actively consider terms that should be excluded to avoid irrelevant profiles. For instance, if targeting "Sales Directors", consider excluding "-assistant", "-coordinator", "-intern", "-entry level". Incorporate these as negative keywords (e.g., `-term`).
 
     **Output Requirements:**
-    * Return ONLY a valid JSON array of strings. Each string in the array is an optimized search query.
-    * Example: `["query one", "query two", "query three"]`
+    * Return ONLY a valid JSON array of objects. Each object should have "query" and "confidence" (1-5, 5 is highest) keys.
+    * Example: `[{"query": "query one", "confidence": 5}, {"query": "query two", "confidence": 4}]`
     * Do NOT include explanations, labels, or any text before/after the JSON array.
     * Do NOT include site:linkedin.com/in/ as the CSE is already configured to search only within LinkedIn.
 
@@ -144,20 +149,23 @@ def optimize_query_with_gemini(query_text):
     
     ORIGINAL: "Product managers at enterprise SaaS companies in Boston"
     OPTIMIZED_JSON_LIST: [
-        "(\\"product manager\\" OR \\"product owner\\") AND (\\"enterprise software\\" OR \\"B2B SaaS\\") AND (Boston OR \\"MA\\") -junior",
-        "(\\"senior product manager\\" OR \\"group product manager\\") AND SaaS AND (\\"Boston Area\\" OR \\"Cambridge MA\\") -intern -associate",
-        "(\\"head of product\\" OR \\"product lead\\") AND (\\"enterprise SaaS\\" OR \\"cloud software\\") AND (Massachusetts OR \\"New England\\") -consultant"
+        {{"query": "(\\"product manager\\" OR \\"product owner\\") AND (\\"enterprise software\\" OR \\"B2B SaaS\\") AND (Boston OR \\"MA\\") -junior", "confidence": 5}},
+        {{"query": "(\\"senior product manager\\" OR \\"group product manager\\") AND SaaS AND (\\"Boston Area\\" OR \\"Cambridge MA\\") -intern -associate", "confidence": 4}},
+        {{"query": "(\\"head of product\\" OR \\"product lead\\") AND (\\"enterprise SaaS\\" OR \\"cloud software\\") AND (Massachusetts OR \\"New England\\") -consultant", "confidence": 4}}
     ]
     
     ORIGINAL: "Finance executives at Series B startups in Europe"
     OPTIMIZED_JSON_LIST: [
-        "(\\"CFO\\" OR \\"Chief Financial Officer\\" OR \\"VP Finance\\" OR \\"Head of Finance\\" OR \\"Finance Director\\") AND (\\"Series B\\" OR \\"Series C\\" OR \\"growth stage\\" OR \\"venture backed\\" OR \\"venture funded\\") AND (\\"Europe\\" OR \\"European Union\\" OR EU OR London OR Paris OR Berlin OR Amsterdam OR Madrid OR \\"Nordic\\" OR DACH)",
-        "(\\"Finance Executive\\" OR \\"Finance Leader\\") AND (startup OR scaleup) AND (UK OR Germany OR France OR Netherlands OR Spain) AND (fintech OR \\"financial services\\") -analyst",
-        "(\\"Head of Finance\\" OR \\"Finance Director\\") AND (\\"venture capital\\" OR \\"private equity backed\\") AND (Europe) AND (B2B OR B2C)"
+        {{"query": "(\\"CFO\\" OR \\"Chief Financial Officer\\" OR \\"VP Finance\\" OR \\"Head of Finance\\" OR \\"Finance Director\\") AND (\\"Series B\\" OR \\"Series C\\" OR \\"growth stage\\" OR \\"venture backed\\" OR \\"venture funded\\") AND (\\"Europe\\" OR \\"European Union\\" OR EU OR London OR Paris OR Berlin OR Amsterdam OR Madrid OR \\"Nordic\\" OR DACH)", "confidence": 5}},
+        {{"query": "(\\"Finance Executive\\" OR \\"Finance Leader\\") AND (startup OR scaleup) AND (UK OR Germany OR France OR Netherlands OR Spain) AND (fintech OR \\"financial services\\") -analyst", "confidence": 4}},
+        {{"query": "(\\"Head of Finance\\" OR \\"Finance Director\\") AND (\\"venture capital\\" OR \\"private equity backed\\") AND (Europe) AND (B2B OR B2C)", "confidence": 3}}
     ]
 
     Original ICP criteria:
     {query_text}
+
+    User-provided negative keywords to EXCLUDE (append these to each generated query):
+    {negative_keywords_for_prompt if negative_keywords_for_prompt else "None"}
 
     Optimized Google Search String List (JSON Array of 3-5 diverse queries):
     """
@@ -191,13 +199,33 @@ def optimize_query_with_gemini(query_text):
                 json_str = json_match.group(0)
                 query_variations = json.loads(json_str)
                 
-                # Validate that we have a list of strings
-                if isinstance(query_variations, list) and all(isinstance(q, str) for q in query_variations):
-                    # Return the list of query variations
-                    logger.info(f"Generated {len(query_variations)} query variations with Gemini")
-                    return query_variations
+                # Handle both the new format (objects with query and confidence) and old format (just strings)
+                if isinstance(query_variations, list):
+                    if all(isinstance(q, dict) and "query" in q for q in query_variations):
+                        # New format with query and confidence
+                        queries_only = [item["query"] for item in query_variations]
+                        logger.info(f"Generated {len(queries_only)} query variations with Gemini (with confidence scores)")
+                    elif all(isinstance(q, str) for q in query_variations):
+                        # Old format with just strings
+                        queries_only = query_variations
+                        logger.info(f"Generated {len(queries_only)} query variations with Gemini (without confidence scores)")
+                    else:
+                        logger.warning("Unexpected format in Gemini response, using original query")
+                        queries_only = [query_text]
                 else:
-                    logger.warning("Gemini response was not a list of strings, using original query")
+                    logger.warning("Gemini response was not a list, using original query")
+                    queries_only = [query_text]
+                
+                # Ensure user-provided negative keywords are appended if Gemini didn't include them
+                final_variations = []
+                for q_var in queries_only:
+                    current_q = q_var
+                    for neg_kw in negative_keywords_list:
+                        if f"-{neg_kw.lower()}" not in current_q.lower() and f"-\"{neg_kw.lower()}\"" not in current_q.lower():
+                            current_q += f" -{neg_kw}"  # Append as simple negative keyword
+                    final_variations.append(current_q)
+                
+                return final_variations
             else:
                 logger.warning("No JSON array found in Gemini response, using original query")
         except json.JSONDecodeError:
@@ -213,7 +241,20 @@ def optimize_query_with_gemini(query_text):
 
 def save_queries_to_yaml(queries):
     """Save the list of ICP queries to the YAML file."""
-    query_data = {"queries": [{"query": q} for q in queries]}
+    # Handle both legacy format (list of strings) and new format (list of dicts)
+    query_data = {"queries": []}
+    
+    for q in queries:
+        if isinstance(q, str):
+            # Legacy format, just a string description
+            query_data["queries"].append({
+                "description": q,
+                "negative_keywords": ""
+            })
+        elif isinstance(q, dict):
+            # New format with description and negative_keywords
+            query_data["queries"].append(q)
+    
     with open("config/queries.yaml", "w") as f:
         yaml.dump(query_data, f, default_flow_style=False)
     logger.info(f"Saved {len(queries)} ICPs to config/queries.yaml")
@@ -548,7 +589,7 @@ async def _process_all_icps_concurrently(queries_to_process, limit_per_icp, batc
     Process multiple ICPs in parallel with support for multiple query variations per ICP.
     
     Args:
-        queries_to_process: List of original ICP query strings
+        queries_to_process: List of ICP dictionaries with description and negative_keywords
         limit_per_icp: Max number of profiles to fetch per ICP query variation
         batcher_instance: BatchRequestManager instance
         st_progress_bar: Streamlit progress bar
@@ -565,10 +606,24 @@ async def _process_all_icps_concurrently(queries_to_process, limit_per_icp, batc
 
     # Step 1: Optimize all original ICPs to get lists of query variations
     optimized_query_collections = []
-    for i, original_query_text in enumerate(queries_to_process):
+    for i, icp_item in enumerate(queries_to_process):
         st_progress_text.text(f"Optimizing ICP #{i+1}/{num_original_icps}...")
-        # optimize_query_with_gemini now returns a list of query strings
-        optimized_variations_list = optimize_query_with_gemini(original_query_text)
+        
+        # Extract description and negative_keywords from the ICP item
+        if isinstance(icp_item, str):
+            # Legacy format (just a string)
+            original_query_text = icp_item
+            negative_keywords = ""
+        elif isinstance(icp_item, dict):
+            # New format (dictionary with description and negative_keywords)
+            original_query_text = icp_item.get("description", "")
+            negative_keywords = icp_item.get("negative_keywords", "")
+        else:
+            logger.warning(f"Unexpected ICP format: {type(icp_item)}. Skipping.")
+            continue
+        
+        # optimize_query_with_gemini now accepts negative_keywords
+        optimized_variations_list = optimize_query_with_gemini(original_query_text, negative_keywords)
         
         # Limit the number of variations to 3 to reduce API load
         if len(optimized_variations_list) > 3:
@@ -577,6 +632,7 @@ async def _process_all_icps_concurrently(queries_to_process, limit_per_icp, batc
         
         optimized_query_collections.append({
             "original": original_query_text,
+            "negative_keywords": negative_keywords,
             "optimized_variations": optimized_variations_list, # List of query strings
             "results": [],  # Placeholder for aggregated results for this original ICP
             "result_count": 0  # Placeholder
@@ -744,139 +800,95 @@ def main():
                         value=initial_value,
                         height=100,
                         key=new_icp_key,
-                        help="Describe the professionals you want to find. The AI will optimize your query.",
-                        placeholder="""Example:
-                        Product executives at SaaS companies in growth stage (Series B or C) located in San Francisco, New York, or Austin
-                        
-                        OR
-                        
-                        Operations leaders (COO, VP Ops) at e-commerce or retail tech companies in Europe (London, Berlin, Amsterdam)"""
+                        help="Describe your ideal customer profile in natural language. Example: 'Product managers at enterprise SaaS companies in Boston'"
                     )
                     
-                    # Buttons for adding and editing
-                    col1, col2 = st.columns([1, 4])
+                    # Add field for negative keywords
+                    new_icp_negative_keywords = st.text_input(
+                        "Negative Keywords (optional, comma-separated)", 
+                        key="new_icp_negative_keywords_input",
+                        help="Terms to exclude from search results, e.g.: intern, assistant, junior, contract"
+                    )
+                    
+                    # Button to add new ICP
+                    col1, col2 = st.columns([1, 5])
                     with col1:
-                        if st.button("Add ICP", use_container_width=True):
+                        if st.button("Add ICP", key="add_icp_button", disabled=not new_icp.strip()):
                             if new_icp.strip():
-                                # Add the ICP to the list
-                                st.session_state.queries.append(new_icp.strip())
+                                # Add new ICP with negative keywords
+                                new_icp_dict = {
+                                    "description": new_icp.strip(),
+                                    "negative_keywords": new_icp_negative_keywords.strip()
+                                }
+                                st.session_state.queries.append(new_icp_dict)
                                 save_queries_to_yaml(st.session_state.queries)
                                 
-                                # Set the clear input flag instead of directly modifying the widget value
+                                # Clear the input field for the next entry
                                 st.session_state.clear_input = True
+                                # Also clear the negative keywords input
+                                st.session_state.new_icp_negative_keywords_input = ""
                                 
-                                # Set a flag to show a notification
-                                st.session_state.show_success = True
-                                st.session_state.success_message = f"ICP #{len(st.session_state.queries)} added successfully!"
-                                
+                                st.success(f"✅ Added new ICP: {new_icp.strip()[:50]}{'...' if len(new_icp.strip()) > 50 else ''}")
                                 # Rerun to refresh the UI
-                                st.rerun()
-                            else:
-                                st.error("❌ ICP criteria cannot be empty")
-                    
-                    # Show success message if flag is set
-                    if st.session_state.get('show_success', False):
-                        # Create a custom success notification
-                        st.markdown(
-                            f"""
-                            <div style="
-                                padding: 10px; 
-                                border-radius: 5px; 
-                                margin-bottom: 15px;
-                                background-color: #d1e7dd;
-                                border-left: 5px solid #0a3622;
-                                animation: fadeIn 0.5s;
-                            ">
-                                <div style="display: flex; align-items: center;">
-                                    <div style="font-size: 20px; margin-right: 10px;">✅</div>
-                                    <div style="font-weight: 500; color: #0a3622;">
-                                        {st.session_state.success_message}
-                                    </div>
-                                </div>
-                            </div>
-                            <style>
-                                @keyframes fadeIn {{
-                                    0% {{ opacity: 0; transform: translateY(-20px); }}
-                                    100% {{ opacity: 1; transform: translateY(0); }}
-                                }}
-                            </style>
-                            """, 
-                            unsafe_allow_html=True
-                        )
-                        
-                        # Clear the success flag after 3 seconds (on next rerun)
-                        # This is useful for subsequent adds
-                        if 'success_time' not in st.session_state:
-                            st.session_state.success_time = time.time()
-                        elif time.time() - st.session_state.success_time > 3:
-                            st.session_state.show_success = False
-                            st.session_state.pop('success_time', None)
-                    
-                    # Information about ICPs
-                    st.markdown("""
-                    ### Tips for effective ICPs
-                    - Describe your target professionals in natural language
-                    - Include job titles, industries, company types, and locations
-                    - Be specific about seniority levels when relevant
-                    - Mention company stages or sizes if important
-                    - Don't worry about search syntax - the AI will optimize your criteria
-                    """)
+                                st.experimental_rerun()
                 
                 with right_col:
-                    st.markdown("### Your ICPs")
+                    # Show existing ICPs with delete buttons
+                    st.markdown("### Existing ICPs")
                     
-                    # Show existing ICPs with edit/delete options
                     if not st.session_state.queries:
                         st.info("No ICPs added yet. Add your first ICP on the left.")
                     else:
-                        for i, query in enumerate(st.session_state.queries):
-                            with st.expander(f"ICP #{i+1}", expanded=False):
-                                st.code(query)
-                                col1, col2 = st.columns(2)
+                        for i, query_item in enumerate(st.session_state.queries):
+                            # Handle both string and dict formats
+                            if isinstance(query_item, str):
+                                description = query_item
+                                negative_keywords = ""
+                            else:
+                                description = query_item.get("description", "")
+                                negative_keywords = query_item.get("negative_keywords", "")
+                            
+                            with st.expander(f"ICP #{i+1}: {description[:50]}{'...' if len(description) > 50 else ''}", expanded=False):
+                                # Display the full ICP description
+                                st.text_area(f"ICP #{i+1} Description", value=description, height=100, key=f"icp_{i}_description")
+                                
+                                # Display and allow editing of negative keywords
+                                edited_negative_keywords = st.text_input(
+                                    f"Negative Keywords (comma-separated)", 
+                                    value=negative_keywords,
+                                    key=f"icp_{i}_negative_keywords"
+                                )
+                                
+                                col1, col2 = st.columns([1, 1])
                                 with col1:
-                                    if st.button("Delete", key=f"delete_{i}"):
-                                        st.session_state.queries.pop(i)
+                                    # Update button
+                                    if st.button("Update", key=f"update_icp_{i}"):
+                                        # Get the updated values
+                                        updated_description = st.session_state[f"icp_{i}_description"]
+                                        updated_negative_keywords = st.session_state[f"icp_{i}_negative_keywords"]
+                                        
+                                        # Update the ICP
+                                        st.session_state.queries[i] = {
+                                            "description": updated_description.strip(),
+                                            "negative_keywords": updated_negative_keywords.strip()
+                                        }
                                         save_queries_to_yaml(st.session_state.queries)
-                                        st.rerun()
+                                        st.success(f"✅ Updated ICP #{i+1}")
+                                        # Rerun to refresh the UI
+                                        st.experimental_rerun()
+                                
                                 with col2:
-                                    if st.button("Edit", key=f"edit_{i}"):
-                                        # Store the ICP to edit and its index
-                                        st.session_state.editing_icp = query
-                                        st.session_state.editing_index = i
-                                        # Show the edit dialog
-                                        st.session_state.show_edit_dialog = True
-                                        st.rerun()
-                    
-                    # Edit dialog (if needed)
-                    if st.session_state.get('show_edit_dialog', False):
-                        with st.container():
-                            st.markdown("### Edit ICP")
-                            
-                            edited_icp = st.text_area(
-                                "Edit ICP criteria",
-                                value=st.session_state.editing_icp,
-                                height=100
-                            )
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button("Save Changes"):
-                                    # Update the ICP
-                                    if edited_icp.strip():
-                                        st.session_state.queries[st.session_state.editing_index] = edited_icp
+                                    # Delete button
+                                    if st.button("Delete", key=f"delete_icp_{i}"):
+                                        # Remove this ICP
+                                        removed_icp = st.session_state.queries.pop(i)
                                         save_queries_to_yaml(st.session_state.queries)
-                                        st.success(f"✅ Updated ICP #{st.session_state.editing_index + 1}")
-                                        # Close the dialog
-                                        st.session_state.show_edit_dialog = False
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ ICP criteria cannot be empty")
-                            
-                            with col2:
-                                if st.button("Cancel"):
-                                    # Close the dialog without saving
-                                    st.session_state.show_edit_dialog = False
-                                    st.rerun()
+                                        if isinstance(removed_icp, dict):
+                                            st.success(f"✅ Removed ICP: {removed_icp.get('description', '')[:50]}{'...' if len(removed_icp.get('description', '')) > 50 else ''}")
+                                        else:
+                                            st.success(f"✅ Removed ICP: {removed_icp[:50]}{'...' if len(removed_icp) > 50 else ''}")
+                                        # Rerun to refresh the UI
+                                        st.experimental_rerun()
                     
                     # Run settings after the ICPs
                     st.markdown("---")

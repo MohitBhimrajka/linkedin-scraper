@@ -26,22 +26,41 @@ async def run(limit: int = 100):
         return
     
     # Load queries from YAML configuration
-    queries = load_queries()
-    if not queries:
-        logger.error("No queries found. Please check config/queries.yaml file.")
+    icp_configs = load_queries()
+    if not icp_configs:
+        logger.error("No ICP configurations found. Please check config/queries.yaml file.")
         return
     
-    logger.info(f"Starting LinkedIn profile collection with {len(queries)} queries (limit: {limit})")
+    logger.info(f"Starting LinkedIn profile collection with {len(icp_configs)} ICP configurations (limit: {limit})")
     
     # Create Batcher for rate limiting and parallelism
     batcher = Batcher(max_in_flight=10, delay=2)
     
-    # Process each query
+    # Process each ICP configuration
     all_results = []
-    for query in queries:
-        query_results = await process_query(query, limit, batcher)
-        all_results.extend(query_results)
-        logger.info(f"Completed query with {len(query_results)} unique profiles")
+    for icp_config in icp_configs:
+        description = icp_config["description"]
+        negative_keywords = icp_config.get("negative_keywords", "")
+        
+        # Optimize the query with Gemini if available
+        if "GEMINI_API_KEY" in os.environ:
+            from streamlit_app import optimize_query_with_gemini
+            query_variations = optimize_query_with_gemini(description, negative_keywords)
+            
+            # Process each query variation
+            variation_results = []
+            for query_variation in query_variations:
+                query_results = await process_query(query_variation, limit, batcher)
+                variation_results.extend(query_results)
+                logger.info(f"Completed query variation with {len(query_results)} profiles")
+            
+            all_results.extend(variation_results)
+            logger.info(f"Completed ICP '{description[:30]}...' with {len(variation_results)} total profiles from all variations")
+        else:
+            # Fallback to using the description directly as the query if Gemini is not available
+            query_results = await process_query(description, limit, batcher)
+            all_results.extend(query_results)
+            logger.info(f"Completed ICP '{description[:30]}...' with {len(query_results)} profiles")
     
     # Normalize and deduplicate results
     unique_profiles = normalize_results(all_results)
@@ -102,12 +121,12 @@ async def fetch_page(query: str, start: int, batcher: Batcher) -> List[Dict]:
         return await fetch_profiles(query, start)
 
 
-def load_queries() -> List[str]:
+def load_queries() -> List[Dict]:
     """
     Load search queries from YAML configuration.
     
     Returns:
-        List of query strings
+        List of dictionaries with query descriptions and negative keywords
     """
     config_path = os.path.join("config", "queries.yaml")
     
@@ -119,12 +138,26 @@ def load_queries() -> List[str]:
             logger.error("Invalid queries.yaml format. Expected 'queries' key.")
             return []
             
-        # Extract query strings
+        # Extract query items
         query_items = config["queries"]
-        queries = [item["query"] for item in query_items if "query" in item]
         
-        logger.info(f"Loaded {len(queries)} queries from configuration")
-        return queries
+        # Convert older format to newer format if needed
+        result_queries = []
+        for item in query_items:
+            if "query" in item and "description" not in item:
+                # Old format using 'query' key
+                result_queries.append({
+                    "description": item["query"],
+                    "negative_keywords": ""
+                })
+            elif "description" in item:
+                # New format
+                if "negative_keywords" not in item:
+                    item["negative_keywords"] = ""
+                result_queries.append(item)
+        
+        logger.info(f"Loaded {len(result_queries)} ICP configurations from configuration")
+        return result_queries
         
     except Exception as e:
         logger.error(f"Error loading queries: {str(e)}")
