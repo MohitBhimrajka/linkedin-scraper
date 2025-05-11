@@ -1501,6 +1501,11 @@ def main():
                                 "Contact Status": "contact_status",
                                 "Connection State": "connection_state",
                                 "Follower Cnt": "followers_count",
+                                "Last Msg UTC": "last_interaction_utc",
+                                "Recent Post Snippet": "recent_post_snippet",
+                                "Recent Post Date": "recent_post_date",
+                                "Last Interaction Type": "last_interaction_type",
+                                "Last Interaction Snippet": "last_interaction_snippet"
                                 # Add other fields if they exist in Profile model and sheet
                             }
 

@@ -2,6 +2,7 @@ from src.personalize import craft_messages
 import pytest
 from unittest.mock import patch, MagicMock
 import json
+from src.transform import Profile  # Import the Profile class
 
 @pytest.fixture
 def mock_gemini_response():
@@ -24,11 +25,16 @@ def mock_gemini_response():
 
 # Test now works correctly with the prompt template
 def test_craft_messages(mock_gemini_response):
-    sample = {"firstName": "Sara", "headline": "Product Manager @Acme"}
+    # Create a Profile object instead of a dictionary
+    sample_profile = Profile(
+        linkedin_url="https://linkedin.com/in/sara-test",
+        first_name="Sara",
+        title="Product Manager @Acme"
+    )
     
     # Mock the Gemini client call
     with patch('src.personalize.client.models.generate_content', return_value=mock_gemini_response):
-        out = craft_messages(sample)
+        out = craft_messages(sample_profile)
     
     # Verify the result
     assert set(out.keys()) == {"connection", "comment", "followups", "inmail_subject", "inmail_body"}
@@ -38,7 +44,12 @@ def test_craft_messages(mock_gemini_response):
 
 def test_craft_messages_fallback():
     """Test the fallback behavior when all API attempts fail"""
-    sample = {"firstName": "Sara", "headline": "Product Manager @Acme"}
+    # Create a Profile object instead of a dictionary
+    sample_profile = Profile(
+        linkedin_url="https://linkedin.com/in/sara-test",
+        first_name="Sara",
+        title="Product Manager @Acme"
+    )
     
     # Create a patch for the entire craft_messages function but allow it to call through to the real implementation
     with patch('src.personalize.client.models.generate_content') as mock_generate:
@@ -51,7 +62,7 @@ def test_craft_messages_fallback():
         ]
         
         # Call the function
-        out = craft_messages(sample)
+        out = craft_messages(sample_profile)
     
     # Verify we got the fallback response
     assert set(out.keys()) == {"connection", "comment", "followups", "inmail_subject", "inmail_body"}
@@ -60,18 +71,24 @@ def test_craft_messages_fallback():
 
 def test_message_structure():
     """Test that the output from craft_messages has the expected structure."""
-    # Use a minimal profile
-    sample = {"firstName": "Test", "headline": "Test Role"}
+    # Create a Profile object instead of a dictionary
+    sample_profile = Profile(
+        linkedin_url="https://linkedin.com/in/test-profile",
+        first_name="Test",
+        title="Test Role"
+    )
     
     # Create a minimal mock that just returns a simple dictionary with the right structure
-    with patch('src.personalize.craft_messages', return_value={
-        "connection": "Test connection message",
-        "comment": "Test comment",
-        "followups": ["Follow up 1", "Follow up 2", "Follow up 3"],
-        "inmail_subject": "Test subject",
-        "inmail_body": "Test body"
-    }):
-        result = craft_messages(sample)
+    with patch('src.personalize.client.models.generate_content', return_value=MagicMock(
+        text=json.dumps({
+            "connection": "Test connection message",
+            "comment": "Test comment",
+            "followups": ["Follow up 1", "Follow up 2", "Follow up 3"],
+            "inmail_subject": "Test subject",
+            "inmail_body": "Test body"
+        })
+    )):
+        result = craft_messages(sample_profile)
     
     # Check the structure
     assert isinstance(result, dict)
