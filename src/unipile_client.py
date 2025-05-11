@@ -146,12 +146,11 @@ class UnipileClient:
         if send_at:
             body["send_at"] = send_at
         
-        # Include account_id in both the request body AND the URL query params
+        # No longer include account_id in query params since it's already in the body
         response = await self._request(
             "POST", 
             "/users/invite", 
-            json=body, 
-            params={"account_id": self.account_id}
+            json=body
         )
         
         # Check for the expected success response structure

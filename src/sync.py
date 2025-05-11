@@ -138,6 +138,31 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
                     if last_message_at:
                         updates["M"] = last_message_at
                     
+                    # Extract and add interaction type (column R)
+                    last_interaction_type = ""
+                    if conversation_data:
+                        # Determine interaction type based on conversation data
+                        if conversation_data.get("last_message_direction") == "inbound":
+                            last_interaction_type = "Message Received"
+                        elif conversation_data.get("last_message_direction") == "outbound":
+                            last_interaction_type = "Message Sent"
+                        elif relation_data.get("state") == "CONNECTED" and relation_data.get("updated_at"):
+                            last_interaction_type = "Connection Accepted"
+                        elif relation_data.get("state") == "PENDING" and relation_data.get("updated_at"):
+                            last_interaction_type = "Invitation Sent"
+                        
+                        if last_interaction_type:
+                            updates["R"] = last_interaction_type
+                    
+                    # Extract and add last interaction snippet (column S)
+                    last_interaction_snippet = ""
+                    if conversation_data and conversation_data.get("last_message_text"):
+                        last_interaction_snippet = conversation_data.get("last_message_text", "")
+                        # Truncate if too long
+                        if len(last_interaction_snippet) > 150:
+                            last_interaction_snippet = last_interaction_snippet[:147] + "..."
+                        updates["S"] = last_interaction_snippet
+                    
                     # Apply updates if we have any
                     if updates:
                         # Prepare batch updates
@@ -208,29 +233,54 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
                 # Prepare updates
                 updates = {}
                 
-                # Add Invite ID (column O)
+                # Add Invite ID (column S)
                 invite_id = invite_data.get("id", "")
                 if invite_id:
-                    updates["O"] = invite_id
+                    updates["S"] = invite_id
                 
-                # Add Connection State (column P)
+                # Add Connection State (column T)
                 connection_state = relation_data.get("state", "NOT_CONNECTED")
                 if connection_state:
-                    updates["P"] = connection_state
+                    updates["T"] = connection_state
                 
-                # Add Follower Count (column Q)
+                # Add Follower Count (column U)
                 follower_count = invite_data.get("follower_count", 0)
                 if follower_count:
-                    updates["Q"] = follower_count
+                    updates["U"] = follower_count
                 
-                # Add Unread Count (column R)
+                # Add Unread Count (column V)
                 unread_count = conversation_data.get("unread_count", 0)
-                updates["R"] = unread_count  # Always set, even if 0
+                updates["V"] = unread_count  # Always set, even if 0
                 
-                # Add Last Message UTC (column S)
+                # Add Last Message UTC (column W)
                 last_message_at = conversation_data.get("last_message_at", "")
                 if last_message_at:
-                    updates["S"] = last_message_at
+                    updates["W"] = last_message_at
+                
+                # Add Last Interaction Type (column Z)
+                last_interaction_type = ""
+                if conversation_data:
+                    # Determine interaction type based on conversation data
+                    if conversation_data.get("last_message_direction") == "inbound":
+                        last_interaction_type = "Message Received"
+                    elif conversation_data.get("last_message_direction") == "outbound":
+                        last_interaction_type = "Message Sent"
+                    elif relation_data.get("state") == "CONNECTED" and relation_data.get("updated_at"):
+                        last_interaction_type = "Connection Accepted"
+                    elif relation_data.get("state") == "PENDING" and relation_data.get("updated_at"):
+                        last_interaction_type = "Invitation Sent"
+                    
+                    if last_interaction_type:
+                        updates["Z"] = last_interaction_type
+                
+                # Add Last Interaction Snippet (column AA)
+                last_interaction_snippet = ""
+                if conversation_data and conversation_data.get("last_message_text"):
+                    last_interaction_snippet = conversation_data.get("last_message_text", "")
+                    # Truncate if too long
+                    if len(last_interaction_snippet) > 150:
+                        last_interaction_snippet = last_interaction_snippet[:147] + "..."
+                    updates["AA"] = last_interaction_snippet
                 
                 # Apply updates if we have any
                 if updates:
@@ -251,14 +301,7 @@ async def sync_status(sheet_id: str, sheet_name: str, specific_rows: Optional[li
                 logger.error(f"Error processing row {sheet_row}: {str(e)}")
                 stats["errors"] += 1
         
-        # Clean up
-        await cli.close()
         return stats
-    
     except Exception as e:
-        logger.error(f"Error in sync_status: {str(e)}")
-        try:
-            await cli.close()
-        except:
-            pass
+        logger.error(f"General error in sync_status: {str(e)}")
         raise 

@@ -26,6 +26,12 @@ class Profile:
     inmail: Optional[str] = ""  # InMail message
     location: Optional[str] = None
     company: Optional[str] = None
+    # New fields for Unipile data
+    recent_post_snippet: Optional[str] = None  # Snippet of the most recent post
+    recent_post_date: Optional[str] = None  # Date of the most recent post
+    last_interaction_type: Optional[str] = None  # Type of last interaction (e.g., "Message Sent")
+    last_interaction_snippet: Optional[str] = None  # Content snippet of last interaction
+    last_interaction_utc: Optional[str] = None  # Timestamp of last interaction
     
     def __post_init__(self):
         """Ensure consistent default values for key fields"""
@@ -182,7 +188,12 @@ def extract_profile_data(item: Dict, metatags: Dict, linkedin_url: str) -> Profi
         location=location,
         company=company.strip() or None,  # Ensure it's None if empty after stripping
         contact_status="Not contacted",  # Explicitly set default status
-        connection_state="NOT_CONNECTED"  # Explicitly set default connection state
+        connection_state="NOT_CONNECTED",  # Explicitly set default connection state
+        recent_post_snippet=None,  # Initialize recent_post_snippet
+        recent_post_date=None,  # Initialize recent_post_date
+        last_interaction_type=None,  # Initialize last_interaction_type
+        last_interaction_snippet=None,  # Initialize last_interaction_snippet
+        last_interaction_utc=None  # Initialize last_interaction_utc
     )
 
 

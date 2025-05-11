@@ -339,8 +339,8 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     all_values = worksheet.get_all_values()
                     
                     # Check if we need to upgrade headers to new format with status columns
-                    if all_values and len(all_values[0]) < 23:
-                        logger.info(f"Upgrading worksheet {unique_sheet_name} from {len(all_values[0])} to 23 columns")
+                    if all_values and len(all_values[0]) < 27:  # Updated from 23 to 27 columns
+                        logger.info(f"Upgrading worksheet {unique_sheet_name} from {len(all_values[0])} to 27 columns")
                         
                         # Define the full set of headers
                         headers = [
@@ -366,14 +366,19 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                             "Connection State",
                             "Follower Cnt",
                             "Unread Cnt",
-                            "Last Msg UTC"
+                            "Last Msg UTC",
+                            # New columns for enhanced Unipile data
+                            "Recent Post Snippet",
+                            "Recent Post Date",
+                            "Last Interaction Type",
+                            "Last Interaction Snippet"
                         ]
                         
-                        # Update headers (A-W = 23 columns)
-                        worksheet.update("A1:W1", [headers])
+                        # Update headers (A-AA = 27 columns)
+                        worksheet.update("A1:AA1", [headers])
                         
                         # Format headers
-                        worksheet.format("A1:W1", {
+                        worksheet.format("A1:AA1", {
                             "textFormat": {"bold": True},
                             "horizontalAlignment": "CENTER",
                             "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -410,13 +415,13 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                         
                         # Auto-resize columns
                         try:
-                            columns_auto_resize_with_retry(worksheet, 0, 22)  # Resize columns A-W (0-22)
+                            columns_auto_resize_with_retry(worksheet, 0, 26)  # Resize columns A-AA (0-26)
                         except Exception as resize_error:
                             logger.warning(f"Failed to auto-resize columns: {str(resize_error)}")
                     
                     if len(all_values) > 1:  # If there are rows beyond the header
                         # Clear everything after row 1
-                        worksheet.batch_clear([f"A2:Z{len(all_values)}"])
+                        worksheet.batch_clear([f"A2:AA{len(all_values)}"])
                         logger.info(f"Cleared existing content in worksheet: {unique_sheet_name}")
                 except Exception as e:
                     logger.warning(f"Failed to clear existing worksheet content: {str(e)}")
@@ -424,7 +429,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 return worksheet
             except WorksheetNotFound:
                 # Create a new worksheet
-                worksheet = spreadsheet.add_worksheet(title=unique_sheet_name, rows=1000, cols=23)
+                worksheet = spreadsheet.add_worksheet(title=unique_sheet_name, rows=1000, cols=27)  # Updated from 23 to 27 columns
                 logger.info(f"Created new worksheet: {unique_sheet_name}")
                 
                 # Add headers
@@ -451,12 +456,17 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                     "Connection State",
                     "Follower Cnt",
                     "Unread Cnt",
-                    "Last Msg UTC"
+                    "Last Msg UTC",
+                    # New columns for enhanced Unipile data
+                    "Recent Post Snippet",
+                    "Recent Post Date",
+                    "Last Interaction Type",
+                    "Last Interaction Snippet"
                 ]
                 append_rows_with_retry(worksheet, [headers], value_input_option='RAW')
                 
                 # Format headers (make bold, freeze row, center alignment)
-                worksheet.format("A1:W1", {
+                worksheet.format("A1:AA1", {
                     "textFormat": {"bold": True},
                     "horizontalAlignment": "CENTER",
                     "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -465,7 +475,7 @@ def create_or_get_worksheet(spreadsheet, sheet_name: str) -> gspread.Worksheet:
                 
                 # Auto-resize columns to fit content - this replaces set_column_width
                 try:
-                    columns_auto_resize_with_retry(worksheet, 0, 22)  # Resize columns A-W (0-22)
+                    columns_auto_resize_with_retry(worksheet, 0, 26)  # Resize columns A-AA (0-26)
                 except Exception as e:
                     logger.warning(f"Failed to auto-resize columns: {str(e)}")
                 
@@ -524,6 +534,27 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
         connection_state = profile.connection_state if hasattr(profile, 'connection_state') and profile.connection_state else "NOT_CONNECTED"
         contact_status = profile.contact_status if hasattr(profile, 'contact_status') and profile.contact_status else "Not contacted"
         
+        # Format recent post snippet
+        recent_post_snippet = ""
+        if hasattr(profile, 'recent_post_snippet') and profile.recent_post_snippet:
+            recent_post_snippet = profile.recent_post_snippet
+            # Truncate long post snippets
+            if len(recent_post_snippet) > 200:
+                recent_post_snippet = recent_post_snippet[:197] + "..."
+        
+        # Format recent post date
+        recent_post_date = profile.recent_post_date if hasattr(profile, 'recent_post_date') else ""
+        
+        # Format last interaction data
+        last_interaction_type = profile.last_interaction_type if hasattr(profile, 'last_interaction_type') else ""
+        
+        last_interaction_snippet = ""
+        if hasattr(profile, 'last_interaction_snippet') and profile.last_interaction_snippet:
+            last_interaction_snippet = profile.last_interaction_snippet
+            # Truncate long interaction snippets
+            if len(last_interaction_snippet) > 200:
+                last_interaction_snippet = last_interaction_snippet[:197] + "..."
+        
         rows.append([
             linkedin_url,
             title,
@@ -547,60 +578,59 @@ def append_rows_to_worksheet(worksheet, profiles: List[Profile]):
             connection_state,  # Connection State
             str(profile.followers_count) if profile.followers_count else "",  # Followers Count
             "0",  # Unread Count (default to 0)
-            ""   # Last Msg UTC
+            profile.last_interaction_utc if hasattr(profile, 'last_interaction_utc') else "",  # Last Msg UTC
+            # New columns for enhanced Unipile data
+            recent_post_snippet,  # Recent Post Snippet
+            recent_post_date,     # Recent Post Date
+            last_interaction_type,  # Last Interaction Type
+            last_interaction_snippet  # Last Interaction Snippet
         ])
     
-    # Retry logic for append operations (in case of API rate limits)
-    max_retries = 3
-    retry_delay = 2  # seconds
-    
-    for attempt in range(max_retries):
-        try:
-            # Append the rows to the worksheet
-            append_rows_with_retry(worksheet, rows)
-            logger.info(f"Successfully appended {len(rows)} profiles to worksheet")
-            
-            # Format all cells for better readability
-            if rows:
-                last_row = worksheet.row_count
-                first_new_row = last_row - len(rows) + 1
-                
-                # Check if we're exceeding 1000 rows (Google Sheets grid limit)
-                if first_new_row > 1:  # Make sure we're not formatting the header row
-                    try:
-                        # Make sure we don't exceed sheet limits (1000 rows max in most sheets)
-                        max_format_row = min(last_row, 1000)  # Google Sheets has a limit of 1000 rows by default
-                        
-                        if first_new_row <= max_format_row:
-                            # Only format rows within the limit
-                            format_last_row = min(last_row, max_format_row)
-                            
-                            # Add formatting for better readability
-                            worksheet.format(f"A{first_new_row}:W{format_last_row}", {
-                                "wrapStrategy": "WRAP",  # Change from CLIP to WRAP
-                                "verticalAlignment": "TOP",
-                                "padding": {"top": 2, "bottom": 2}
-                            })
-                    except Exception as e:
-                        logger.warning(f"Failed to format cells: {str(e)}")
-            
-            # Auto-resize columns after adding data
-            try:
-                columns_auto_resize_with_retry(worksheet, 0, 22)  # Resize columns A-W (includes new columns)
-            except Exception as e:
-                logger.warning(f"Failed to auto-resize columns: {str(e)}")
-                
-            break
+    # Append the rows to the worksheet
+    try:
+        # Use retry wrapper for API call
+        append_rows_with_retry(worksheet, rows)
         
-        except APIError as e:
-            if attempt < max_retries - 1:
-                logger.warning(f"API error when appending rows (attempt {attempt+1}): {str(e)}")
-                time.sleep(retry_delay)
-            else:
-                logger.error(f"Failed to append rows after {max_retries} attempts: {str(e)}")
-                raise
-    else:
-        raise RuntimeError("Failed to append rows to worksheet")
+        # Count of profiles added
+        n_added = len(rows)
+        logger.info(f"Added {n_added} profiles to worksheet: {worksheet.title}")
+        
+        # Format text wrapping for better readability
+        # Only apply if rows were added
+        if n_added > 0:
+            try:
+                # Get the current number of rows in the worksheet
+                all_values = worksheet.get_all_values()
+                
+                # Calculate the row range to format (from first newly added row to last)
+                first_new_row = len(all_values) - n_added + 1
+                last_row = len(all_values)
+                
+                # Only format if the calculation makes sense (avoid negative indexes)
+                if first_new_row > 0 and last_row >= first_new_row:
+                    format_last_row = min(last_row, first_new_row + 999)  # Limit to 1000 rows for API limits
+                    
+                    try:
+                        # Add formatting for better readability
+                        worksheet.format(f"A{first_new_row}:AA{format_last_row}", {
+                            "wrapStrategy": "WRAP",  # Change from CLIP to WRAP
+                            "verticalAlignment": "TOP",
+                        })
+                    except Exception as format_error:
+                        logger.warning(f"Failed to format new rows: {format_error}")
+            except Exception as e:
+                logger.warning(f"Failed to apply text wrapping to new rows: {e}")
+        
+        # Auto-resize columns after adding data
+        try:
+            columns_auto_resize_with_retry(worksheet, 0, 26)  # Resize columns A-AA (includes new columns)
+        except Exception as e:
+            logger.warning(f"Failed to auto-resize columns: {str(e)}")
+        
+        return n_added
+    except Exception as e:
+        logger.error(f"Failed to append rows to worksheet {worksheet.title}: {e}")
+        return 0
 
 
 def create_summary_sheet(spreadsheet, icp_results: List[Dict]):
@@ -1054,7 +1084,7 @@ def create_or_get_master_profiles_sheet(spreadsheet) -> gspread.Worksheet:
         # Check and add any missing columns
         try:
             all_values = worksheet.get_all_values()
-            if all_values and len(all_values[0]) < 15:
+            if all_values and len(all_values[0]) < 19:
                 # We need to update the header row with missing columns
                 logger.info("Updating Master_Profiles sheet with new columns")
                 
@@ -1074,13 +1104,18 @@ def create_or_get_master_profiles_sheet(spreadsheet) -> gspread.Worksheet:
                     "Unipile Connection State",  # L - Connection state from Unipile (NOT_CONNECTED, PENDING, CONNECTED)
                     "Unipile Last Interaction UTC", # M - Last message/interaction time from Unipile
                     "Source ICPs",               # N - List of ICPs this profile matched
-                    "Do Not Contact"             # O - Boolean (TRUE/FALSE) user can set manually
+                    "Do Not Contact",            # O - Boolean (TRUE/FALSE) user can set manually
+                    # New columns for enhanced Unipile data
+                    "Recent Post Snippet",       # P - Snippet of most recent post
+                    "Recent Post Date",          # Q - Date of most recent post
+                    "Last Interaction Type",     # R - Type of last interaction
+                    "Last Interaction Snippet"   # S - Snippet of last interaction content
                 ]
                 
-                worksheet.update("A1:O1", [header])
+                worksheet.update("A1:S1", [header])
                 
                 # Format header
-                worksheet.format("A1:O1", {
+                worksheet.format("A1:S1", {
                     "textFormat": {"bold": True},
                     "horizontalAlignment": "CENTER",
                     "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -1114,7 +1149,7 @@ def create_or_get_master_profiles_sheet(spreadsheet) -> gspread.Worksheet:
         return worksheet
     except WorksheetNotFound:
         # Create new sheet
-        worksheet = spreadsheet.add_worksheet(title="Master_Profiles", rows=1000, cols=15)
+        worksheet = spreadsheet.add_worksheet(title="Master_Profiles", rows=1000, cols=19)
         
         # Define header row
         header = [
@@ -1132,14 +1167,19 @@ def create_or_get_master_profiles_sheet(spreadsheet) -> gspread.Worksheet:
             "Unipile Connection State",  # L - Connection state from Unipile (NOT_CONNECTED, PENDING, CONNECTED)
             "Unipile Last Interaction UTC", # M - Last message/interaction time from Unipile
             "Source ICPs",               # N - List of ICPs this profile matched
-            "Do Not Contact"             # O - Boolean (TRUE/FALSE) user can set manually
+            "Do Not Contact",            # O - Boolean (TRUE/FALSE) user can set manually
+            # New columns for enhanced Unipile data
+            "Recent Post Snippet",       # P - Snippet of most recent post
+            "Recent Post Date",          # Q - Date of most recent post
+            "Last Interaction Type",     # R - Type of last interaction
+            "Last Interaction Snippet"   # S - Snippet of last interaction content
         ]
         
-        worksheet.update("A1:O1", [header])
+        worksheet.update("A1:S1", [header])
         
         # Auto-resize columns for better visibility
         try:
-            worksheet.columns_auto_resize(1, 15)
+            worksheet.columns_auto_resize(1, 19)
         except Exception as e:
             logger.warning(f"Failed to auto-resize columns: {e}")
         
@@ -1327,7 +1367,11 @@ def update_master_profiles(spreadsheet, profiles: List[Profile], icp_name: str) 
             p_obj.connection_state or 'NOT_CONNECTED',
             '',  # Unipile Last Interaction UTC
             icp_name,  # Source ICPs
-            'FALSE'  # Do Not Contact
+            'FALSE',  # Do Not Contact
+            '',  # Recent Post Snippet
+            '',  # Recent Post Date
+            '',  # Last Interaction Type
+            ''  # Last Interaction Snippet
         ]
         new_profiles_for_sheet_append.append(new_row_data)
 
@@ -1401,7 +1445,7 @@ def _format_worksheet(worksheet):
     """
     try:
         # Format headers (make bold, center alignment, background color)
-        worksheet.format("A1:W1", {
+        worksheet.format("A1:AA1", {
             "textFormat": {"bold": True},
             "horizontalAlignment": "CENTER",
             "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
@@ -1412,7 +1456,7 @@ def _format_worksheet(worksheet):
         
         # Auto-resize columns to fit content
         try:
-            columns_auto_resize_with_retry(worksheet, 0, 22)  # Resize columns A-W (0-22)
+            columns_auto_resize_with_retry(worksheet, 0, 26)  # Resize columns A-AA (0-26)
         except Exception as e:
             logger.warning(f"Failed to auto-resize columns in _format_worksheet: {str(e)}")
     

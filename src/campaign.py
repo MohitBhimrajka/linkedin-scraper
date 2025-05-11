@@ -210,6 +210,9 @@ async def run_campaign(
                         
                     logger.info(f"Retrieved provider_id: {provider_id}")
                     
+                    # Store provider_id in profile object
+                    p.provider_id = provider_id
+                    
                     # 4. Always fetch posts to provide data for comments
                     try:
                         logger.info(f"Fetching recent posts for {provider_id}")
@@ -227,6 +230,21 @@ async def run_campaign(
                                 post = posts_data[0]
                                 if isinstance(post, dict) and "text" in post:
                                     recent = post["text"]
+                                    # Store post data in profile object
+                                    p.recent_post_snippet = (post.get("text") or "")[:150] + "..." if len(post.get("text", "")) > 150 else post.get("text", "")
+                                    p.recent_post_date = post.get("created_at") or post.get("published_at")
+                                    
+                                    # Update the sheet with post data if row_idx is available
+                                    if worksheet and row_idx:
+                                        post_updates = [
+                                            {"range": f"X{row_idx}", "values": [[p.recent_post_snippet]]},
+                                            {"range": f"Y{row_idx}", "values": [[p.recent_post_date or ""]]}
+                                        ]
+                                        try:
+                                            await asyncio.to_thread(worksheet.batch_update, post_updates)
+                                            logger.info(f"Updated post data for row {row_idx}")
+                                        except Exception as post_e:
+                                            logger.warning(f"Could not update post data in sheet for {p.linkedin_url}: {post_e}")
                     except IndexError:
                         logger.warning(f"No posts found for {provider_id}")
                         recent = ""
